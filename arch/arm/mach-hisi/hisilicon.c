@@ -83,3 +83,40 @@ DT_MACHINE_START(S40, "HiSilicon S40 (Flattened Device Tree)")
 	.map_io		= s40_map_io,
 	.dt_compat	= s40_compat,
 MACHINE_END
+
+#define S5_IOCH2_PHYS_BASE		0xff000000
+#define S5_IOCH2_VIRT_BASE		0xfb000000
+#define S5_IOCH2_SIZE			0x00430000
+
+static struct map_desc s5_io_desc[] __initdata = {
+	{
+		.pfn		= __phys_to_pfn(S40_IOCH1_PHYS_BASE),
+		.virtual	= S40_IOCH1_VIRT_BASE,
+		.length		= S40_IOCH1_SIZE,
+		.type		= MT_DEVICE,
+	},
+	{
+		.pfn		= __phys_to_pfn(S5_IOCH2_PHYS_BASE),
+		.virtual	= S5_IOCH2_VIRT_BASE,
+		.length		= S5_IOCH2_SIZE,
+		.type		= MT_DEVICE,
+	},
+};
+
+static void __init s5_map_io(void)
+{
+	debug_ll_io_init();
+	iotable_init(s5_io_desc, ARRAY_SIZE(s5_io_desc));
+}
+
+static const char *const s5_compat[] __initconst = {
+	"hisilicon,hi3716cv200",
+	"hisilicon,hi3716mv410",
+	"hisilicon,hi3798mv100",
+	NULL,
+};
+
+DT_MACHINE_START(S5, "HiSilicon S5 (Flattened Device Tree)")
+	.map_io		= s5_map_io,
+	.dt_compat	= s5_compat,
+MACHINE_END
