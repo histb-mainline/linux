@@ -58,6 +58,10 @@
 #define HISTB_USB3_UTMI_CLK1		48
 #define HISTB_USB3_PIPE_CLK1		49
 #define HISTB_USB3_SUSPEND_CLK1		50
+/* Available on hi3798mv200 */
+#define HISTB_ETH_BUS_CLK		51
+#define HISTB_ETH_CLK			52
+#define HISTB_FEPHY_CLK			53
 
 /* clocks provided by mcu CRG */
 #define HISTB_MCE_CLK			1
