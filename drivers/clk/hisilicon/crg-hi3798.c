@@ -466,6 +466,129 @@ static const struct hisi_clocks hi3798mv100_sysctrl_clks = {
 	.gate_clks_num = ARRAY_SIZE(hi3798mv100_sysctrl_gate_clks),
 };
 
+/* hi3798MV200 */
+
+static struct hisi_mux_clock hi3798mv200_mux_clks[] = {
+	{ HI3798_MMC_MUX, "mmc_mux", hi3798cv200_mmc_mux_p,
+		ARRAY_SIZE(hi3798cv200_mmc_mux_p), CLK_SET_RATE_PARENT,
+		0xa0, 8, 3, 0, hi3798cv200_mmc_mux_table, },
+	{ HI3798_COMBPHY0_MUX, "combphy0_mux", hi3798cv200_comphy_mux_p,
+		ARRAY_SIZE(hi3798cv200_comphy_mux_p), CLK_SET_RATE_PARENT,
+		0x188, 3, 1, 0, hi3798cv200_comphy_mux_table, },
+	{ HI3798_SDIO0_MUX, "sdio0_mux", hi3798cv200_sdio_mux_p,
+		ARRAY_SIZE(hi3798cv200_sdio_mux_p), CLK_SET_RATE_PARENT,
+		0x9c, 8, 2, 0, hi3798cv200_sdio_mux_table, },
+};
+
+static const struct hisi_gate_clock hi3798mv200_gate_clks[] = {
+	/* UART */
+	{ HISTB_UART2_CLK, "clk_uart2", "75m",
+		CLK_SET_RATE_PARENT, 0x68, 4, 0, },
+	/* I2C */
+	{ HISTB_I2C0_CLK, "clk_i2c0", "clk_apb",
+		CLK_SET_RATE_PARENT, 0x6C, 4, 0, },
+	{ HISTB_I2C1_CLK, "clk_i2c1", "clk_apb",
+		CLK_SET_RATE_PARENT, 0x6C, 8, 0, },
+	{ HISTB_I2C2_CLK, "clk_i2c2", "clk_apb",
+		CLK_SET_RATE_PARENT, 0x6C, 12, 0, },
+	/* SPI */
+	{ HISTB_SPI0_CLK, "clk_spi0", "clk_apb",
+		CLK_SET_RATE_PARENT, 0x70, 0, 0, },
+	/* SDIO */
+	{ HISTB_SDIO0_BIU_CLK, "clk_sdio0_biu", "200m",
+			CLK_SET_RATE_PARENT, 0x9c, 0, 0, },
+	{ HISTB_SDIO0_CIU_CLK, "clk_sdio0_ciu", "sdio0_mux",
+		CLK_SET_RATE_PARENT, 0x9c, 1, 0, },
+	/* EMMC */
+	{ HISTB_MMC_BIU_CLK, "clk_mmc_biu", "200m",
+		CLK_SET_RATE_PARENT, 0xa0, 0, 0, },
+	{ HISTB_MMC_CIU_CLK, "clk_mmc_ciu", "mmc_mux",
+		CLK_SET_RATE_PARENT, 0xa0, 1, 0, },
+	{ HISTB_MMC_SAP_DLL_MODE_CLK, "clk_mmc_sap_dll_mode", "mmc_sample",
+		CLK_SET_RATE_PARENT, 0x39c, 16, 0, },
+	/* PCIE*/
+	{ HISTB_PCIE_BUS_CLK, "clk_pcie_bus", "200m",
+		CLK_SET_RATE_PARENT, 0x18c, 0, 0, },
+	{ HISTB_PCIE_SYS_CLK, "clk_pcie_sys", "100m",
+		CLK_SET_RATE_PARENT, 0x18c, 1, 0, },
+	{ HISTB_PCIE_PIPE_CLK, "clk_pcie_pipe", "250m",
+		CLK_SET_RATE_PARENT, 0x18c, 2, 0, },
+	{ HISTB_PCIE_AUX_CLK, "clk_pcie_aux", "24m",
+		CLK_SET_RATE_PARENT, 0x18c, 3, 0, },
+	/* GSF */
+	{ HISTB_ETH0_MAC_CLK, "clk_gsf", NULL,
+		CLK_SET_RATE_PARENT, 0xcc, 1, 0, },
+	{ HISTB_ETH0_MACIF_CLK, "clk_gmac", "clk_gsf",
+		CLK_SET_RATE_PARENT, 0xcc, 3, 0, },
+	/* FEPHY */
+	{ HISTB_FEPHY_CLK, "clk_fephy", NULL,
+		CLK_SET_RATE_PARENT, 0x388, 0, 0, },
+	/* COMBPHY */
+	{ HISTB_COMBPHY0_CLK, "clk_combphy0", "combphy0_mux",
+		CLK_SET_RATE_PARENT, 0x188, 0, 0, },
+	/* USB2 */
+	{ HISTB_USB2_BUS_CLK, "clk_u2_bus", "clk_ahb",
+		CLK_SET_RATE_PARENT, 0xb8, 0, 0, },
+	{ HISTB_USB2_PHY_CLK, "clk_u2_phy", "60m",
+		CLK_SET_RATE_PARENT, 0xb8, 4, 0, },
+	{ HISTB_USB2_12M_CLK, "clk_u2_12m", "12m",
+		CLK_SET_RATE_PARENT, 0xb8, 2, 0 },
+	{ HISTB_USB2_48M_CLK, "clk_u2_48m", "48m",
+		CLK_SET_RATE_PARENT, 0xb8, 1, 0 },
+	{ HISTB_USB2_UTMI_CLK, "clk_u2_utmi", "60m",
+		CLK_SET_RATE_PARENT, 0xb8, 5, 0 },
+	{ HISTB_USB2_OTG_UTMI_CLK, "clk_u2_otg_utmi", "60m",
+		CLK_SET_RATE_PARENT, 0xb8, 3, 0 },
+	{ HISTB_USB2_PHY1_REF_CLK, "clk_u2_phy1_ref", "24m",
+		CLK_SET_RATE_PARENT, 0xbc, 0, 0 },
+	{ HISTB_USB2_PHY2_REF_CLK, "clk_u2_phy2_ref", "24m",
+		CLK_SET_RATE_PARENT, 0xbc, 2, 0 },
+	/* USB3 */
+	{ HISTB_USB3_BUS_CLK, "clk_u3_bus", NULL,
+		CLK_SET_RATE_PARENT, 0xb0, 0, 0 },
+	{ HISTB_USB3_UTMI_CLK, "clk_u3_utmi", NULL,
+		CLK_SET_RATE_PARENT, 0xb0, 4, 0 },
+	{ HISTB_USB3_PIPE_CLK, "clk_u3_pipe", NULL,
+		CLK_SET_RATE_PARENT, 0xb0, 3, 0 },
+	{ HISTB_USB3_SUSPEND_CLK, "clk_u3_suspend", NULL,
+		CLK_SET_RATE_PARENT, 0xb0, 2, 0 },
+};
+
+static const struct hi3798_complex_clock hi3798mv200_complex_clks[] = {
+	{ HISTB_ETH1_MAC_CLK, "clk_mac0", NULL,
+		CLK_SET_RATE_PARENT, 0xd0, 0xf, 0xb, },
+};
+
+static const struct hisi_clocks hi3798mv200_crg_clks = {
+	.nr = HI3798_CRG_NR_CLKS,
+	.fixed_rate_clks = hi3798_fixed_rate_clks,
+	.fixed_rate_clks_num = ARRAY_SIZE(hi3798_fixed_rate_clks),
+	.gate_clks = hi3798mv200_gate_clks,
+	.gate_clks_num = ARRAY_SIZE(hi3798mv200_gate_clks),
+	.mux_clks = hi3798mv200_mux_clks,
+	.mux_clks_num = ARRAY_SIZE(hi3798mv200_mux_clks),
+	.phase_clks = hi3798cv200_phase_clks,
+	.phase_clks_num = ARRAY_SIZE(hi3798cv200_phase_clks),
+	.customized_clks = hi3798mv200_complex_clks,
+	.customized_clks_num = ARRAY_SIZE(hi3798mv200_complex_clks),
+	.clk_register_customized = hi3798_clk_register_complex,
+};
+
+static const struct hisi_gate_clock hi3798mv200_sysctrl_gate_clks[] = {
+	{ HISTB_IR_CLK, "clk_ir", "24m",
+		CLK_SET_RATE_PARENT, 0x48, 4, 0, },
+	{ HISTB_TIMER01_CLK, "clk_timer01", "24m",
+		CLK_SET_RATE_PARENT, 0x48, 6, 0, },
+	{ HISTB_UART0_CLK, "clk_uart0", "75m",
+		CLK_SET_RATE_PARENT, 0x48, 12, 0, },
+};
+
+static const struct hisi_clocks hi3798mv200_sysctrl_clks = {
+	.nr = HI3798_SYSCTRL_NR_CLKS,
+	.gate_clks = hi3798mv200_sysctrl_gate_clks,
+	.gate_clks_num = ARRAY_SIZE(hi3798mv200_sysctrl_gate_clks),
+};
+
 static const struct of_device_id hi3798_crg_match_table[] = {
 	{ .compatible = "hisilicon,hi3798cv200-crg",
 		.data = &hi3798cv200_crg_clks },
@@ -475,6 +598,10 @@ static const struct of_device_id hi3798_crg_match_table[] = {
 		.data = &hi3798mv100_crg_clks },
 	{ .compatible = "hisilicon,hi3798mv100-sysctrl",
 		.data = &hi3798mv100_sysctrl_clks },
+	{ .compatible = "hisilicon,hi3798mv200-crg",
+		.data = &hi3798mv200_crg_clks },
+	{ .compatible = "hisilicon,hi3798mv200-sysctrl",
+		.data = &hi3798mv200_sysctrl_clks },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, hi3798_crg_match_table);
