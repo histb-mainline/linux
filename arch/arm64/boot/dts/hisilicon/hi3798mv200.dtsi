@@ -278,68 +278,6 @@
 					function = "emmc";
 				};
 			};
-
-			sd0_default: sd-default-state {
-				cclk-pin {
-					pins = "A3";
-
-					bias-pull-up;
-					slew-rate = <1>;
-					drive-strength = <8>;
-
-					function = "sdio";
-				};
-
-				cdata-pins {
-					pins = "B4", "C4", "A2", "B2";
-
-					bias-pull-up;
-					slew-rate = <1>;
-					drive-strength = <8>;
-
-					function = "sdio";
-				};
-
-				ccmd-pin {
-					pins = "B3";
-
-					bias-pull-up;
-					slew-rate = <1>;
-					drive-strength = <8>;
-
-					function = "sdio";
-				};
-
-				card-detect-pin {
-					pins = "C5";
-
-					bias-pull-up;
-					slew-rate = <1>;
-					drive-strength = <1>;
-
-					function = "sdio";
-				};
-
-				cwpr-pin {
-					pins = "C2";
-
-					bias-pull-up;
-					slew-rate = <1>;
-					drive-strength = <1>;
-
-					function = "sdio";
-				};
-
-				card-power-en-pin {
-					pins = "C1";
-
-					bias-pull-up;
-					slew-rate = <1>;
-					drive-strength = <1>;
-
-					function = "sdio";
-				};
-			};
 		};
 
 		crg: clock-reset-controller@8a22000 {
@@ -536,8 +474,6 @@
 			clk-phase-uhs-sdr104 = <225 135>;
 			clk-phase-uhs-ddr50 = <135 45>;
 			hisilicon,sap-dll-reg = <&crg 0x3a4>;
-			pinctrl-0 = <&sd0_default>;
-			pinctrl-names = "default";
 			status = "disabled";
 		};
 

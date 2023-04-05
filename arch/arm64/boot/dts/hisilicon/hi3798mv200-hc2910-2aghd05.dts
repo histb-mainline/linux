@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DTS File for Skyworth HC2910 with board label 2AGHD05 set-top box.
+ *
+ * Released under the GPLv2 only.
+ */
+
+/dts-v1/;
+
+#include "hi3798mv200.dtsi"
+
+/ {
+	// Usually known as Henan Guangdian HC2910
+	model = "Skyworth HC2910 with board label 2AGHD05";
+	compatible = "skyworth,hc2910-2aghd05", "hisilicon,hi3798mv200";
+
+	aliases {
+		serial0 = &uart0;
+		mmc0 = &emmc; /* eMMC */
+		mmc1 = &sd0; /* SD slot */
+		ethernet0 = &femac;
+		usb0 = &ehci;
+		usb1 = &dwc3;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x0 0x0 0x80000000>;
+	};
+};
+
+&combphy {
+	status = "okay";
+};
+
+&ehci {
+	status = "okay";
+};
+
+&emmc {
+	fifo-depth = <256>;
+	clock-frequency = <50000000>;
+	max-frequency = <150000000>;
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
+	non-removable;
+	status = "okay";
+};
+
+&femac {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&gpio2 {
+	status = "okay";
+};
+
+&gpio3 {
+	status = "okay";
+};
+
+&gpio4 {
+	status = "okay";
+};
+
+&gpio6 {
+	status = "okay";
+};
+
+&gpio7 {
+	status = "okay";
+};
+
+&gpio8 {
+	status = "okay";
+};
+
+&gpio9 {
+	status = "okay";
+};
+
+&ohci {
+	status = "okay";
+};
+
+&sd0 {
+	fifo-depth = <256>;
+	clock-frequency = <150000000>;
+	bus-width = <4>;
+	cap-sd-highspeed;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	sd-uhs-ddr50;
+	status = "okay";
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&usb2_phy1 {
+	status = "okay";
+};
+
+&usb2_phy2 {
+	status = "okay";
+};
+
+&wdg0 {
+	status = "okay";
+};
+
+&xhci {
+	status = "okay";
+};
