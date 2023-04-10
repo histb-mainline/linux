@@ -22,4 +22,9 @@ struct hisi_crg_dev {
 	const struct hisi_crg_funcs *funcs;
 };
 
+/* helper functions for platform driver */
+
+int hisi_crg_probe(struct platform_device *pdev);
+void hisi_crg_remove(struct platform_device *pdev);
+
 #endif	/* __HISI_CRG_H */
