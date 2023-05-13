@@ -1,5 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0
 
+config CRYPTO_DEV_HISI_ADVCA
+	tristate "Support for Hisilicon ADVCA Subsystem"
+	depends on ARCH_HISI || COMPILE_TEST
+	select CRYPTO_SKCIPHER
+	help
+	  Support for Hisilicon ADVCA (Advanced Conditional Access) Subsystem,
+	  which can be found on HiSilicon STB SoCs, such as Hi37xx.
+
 config CRYPTO_DEV_HISI_SEC
 	tristate "Support for Hisilicon SEC crypto block cipher accelerator"
 	select CRYPTO_SKCIPHER
