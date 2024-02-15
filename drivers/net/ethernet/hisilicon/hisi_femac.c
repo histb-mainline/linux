@@ -10,8 +10,10 @@
 #include <linux/etherdevice.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 
@@ -108,7 +110,8 @@ struct hisi_femac_queue {
 struct hisi_femac_priv {
 	void __iomem *port_base;
 	void __iomem *glb_base;
-	struct clk *clk;
+	struct clk_bulk_data *clks;
+	int num_clks;
 	struct reset_control *mac_rst;
 	struct reset_control *phy_rst;
 	u32 phy_reset_delays[DELAYS_NUM];
@@ -116,6 +119,7 @@ struct hisi_femac_priv {
 
 	struct device *dev;
 	struct net_device *ndev;
+	struct platform_device *mdio_pdev;
 
 	struct hisi_femac_queue txq;
 	struct hisi_femac_queue rxq;
@@ -694,6 +698,7 @@ static const struct net_device_ops hisi_femac_netdev_ops = {
 static void hisi_femac_core_reset(struct hisi_femac_priv *priv)
 {
 	reset_control_assert(priv->mac_rst);
+	usleep_range(200, 300);
 	reset_control_deassert(priv->mac_rst);
 }
 
@@ -711,8 +716,32 @@ static void hisi_femac_sleep_us(u32 time_us)
 		msleep(time_ms);
 }
 
+/*
+ * hi3798mv200 holds the PHY reset with the MAC-side clocks gated off, and the
+ * MDIO clock ("phy") running so the bus stays reachable. A DT that names its
+ * clocks nothing (hi3798mv100) gates nothing here, which is what that board
+ * always did.
+ */
+static void hisi_femac_mac_clocks(struct hisi_femac_priv *priv, bool enable)
+{
+	int i;
+
+	for (i = 0; i < priv->num_clks; i++) {
+		if (!priv->clks[i].id)
+			continue;
+		if (strcmp(priv->clks[i].id, "mac") &&
+		    strcmp(priv->clks[i].id, "macif"))
+			continue;
+		if (enable)
+			clk_enable(priv->clks[i].clk);
+		else
+			clk_disable(priv->clks[i].clk);
+	}
+}
+
 static void hisi_femac_phy_reset(struct hisi_femac_priv *priv)
 {
+	hisi_femac_mac_clocks(priv, false);
 	/* To make sure PHY hardware reset success,
 	 * we must keep PHY in deassert state first and
 	 * then complete the hardware reset operation
@@ -728,6 +757,7 @@ static void hisi_femac_phy_reset(struct hisi_femac_priv *priv)
 	reset_control_deassert(priv->phy_rst);
 	/* delay some time to ensure later MDIO access */
 	hisi_femac_sleep_us(priv->phy_reset_delays[POST_DELAY]);
+	hisi_femac_mac_clocks(priv, true);
 }
 
 static void hisi_femac_port_init(struct hisi_femac_priv *priv)
@@ -769,7 +799,7 @@ static void hisi_femac_port_init(struct hisi_femac_priv *priv)
 static int hisi_femac_drv_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct device_node *node = dev->of_node;
+	struct device_node *node = dev->of_node, *mdio_np;
 	struct net_device *ndev;
 	struct hisi_femac_priv *priv;
 	struct phy_device *phy;
@@ -798,16 +828,21 @@ static int hisi_femac_drv_probe(struct platform_device *pdev)
 		goto out_free_netdev;
 	}
 
-	priv->clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(priv->clk)) {
-		dev_err(dev, "failed to get clk\n");
+	priv->num_clks = devm_clk_bulk_get_all(&pdev->dev, &priv->clks);
+	if (priv->num_clks < 0) {
+		ret = priv->num_clks;
+		dev_err(dev, "failed to get clk bulk: %d\n", ret);
+		goto out_free_netdev;
+	}
+	if (!priv->num_clks) {
+		dev_err(dev, "no clock supplied\n");
 		ret = -ENODEV;
 		goto out_free_netdev;
 	}
 
-	ret = clk_prepare_enable(priv->clk);
+	ret = clk_bulk_prepare_enable(priv->num_clks, priv->clks);
 	if (ret) {
-		dev_err(dev, "failed to enable clk %d\n", ret);
+		dev_err(dev, "failed to enable clk bulk: %d\n", ret);
 		goto out_free_netdev;
 	}
 
@@ -831,6 +866,23 @@ static int hisi_femac_drv_probe(struct platform_device *pdev)
 		hisi_femac_phy_reset(priv);
 	}
 
+	/* MDIO is a child of the MAC node on hi3798mv200 and a sibling of it on
+	 * hi3798mv100, where the bus driver binds without help from here. Only the
+	 * child form has to be populated.
+	 */
+	for_each_available_child_of_node(node, mdio_np) {
+		if (!of_node_name_prefix(mdio_np, "mdio"))
+			continue;
+		priv->mdio_pdev = of_platform_device_create(mdio_np, NULL, dev);
+		of_node_put(mdio_np);
+		if (!priv->mdio_pdev) {
+			dev_err(dev, "failed to register MDIO bus device\n");
+			ret = -ENODEV;
+			goto out_disable_clk;
+		}
+		break;
+	}
+
 	/* attach asks the core whether this netdev serialises its ops, and that
 	 * check reads ->netdev_ops, so the tables go in first
 	 */
@@ -843,7 +895,7 @@ static int hisi_femac_drv_probe(struct platform_device *pdev)
 	if (!phy) {
 		dev_err(dev, "connect to PHY failed!\n");
 		ret = -ENODEV;
-		goto out_disable_clk;
+		goto out_unregister_mdio_bus;
 	}
 
 	phy_attached_print(phy, "phy_id=0x%.8lx, phy_mode=%s\n",
@@ -890,8 +942,10 @@ static int hisi_femac_drv_probe(struct platform_device *pdev)
 out_disconnect_phy:
 	netif_napi_del(&priv->napi);
 	phy_disconnect(phy);
+out_unregister_mdio_bus:
+	platform_device_unregister(priv->mdio_pdev);
 out_disable_clk:
-	clk_disable_unprepare(priv->clk);
+	clk_bulk_disable_unprepare(priv->num_clks, priv->clks);
 out_free_netdev:
 	free_netdev(ndev);
 
@@ -907,7 +961,8 @@ static void hisi_femac_drv_remove(struct platform_device *pdev)
 	unregister_netdev(ndev);
 
 	phy_disconnect(ndev->phydev);
-	clk_disable_unprepare(priv->clk);
+	platform_device_unregister(priv->mdio_pdev);
+	clk_bulk_disable_unprepare(priv->num_clks, priv->clks);
 	free_netdev(ndev);
 }
 
@@ -924,7 +979,7 @@ static int hisi_femac_drv_suspend(struct platform_device *pdev,
 		netif_device_detach(ndev);
 	}
 
-	clk_disable_unprepare(priv->clk);
+	clk_bulk_disable_unprepare(priv->num_clks, priv->clks);
 
 	return 0;
 }
@@ -933,8 +988,14 @@ static int hisi_femac_drv_resume(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct hisi_femac_priv *priv = netdev_priv(ndev);
+	int ret;
 
-	clk_prepare_enable(priv->clk);
+	ret = clk_bulk_prepare_enable(priv->num_clks, priv->clks);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to enable clk bulk: %d\n", ret);
+		return ret;
+	}
+
 	if (priv->phy_rst)
 		hisi_femac_phy_reset(priv);
 
@@ -953,6 +1014,7 @@ static const struct of_device_id hisi_femac_match[] = {
 	{.compatible = "hisilicon,hisi-femac-v1",},
 	{.compatible = "hisilicon,hisi-femac-v2",},
 	{.compatible = "hisilicon,hi3516cv300-femac",},
+	{.compatible = "hisilicon,hi3798mv200-femac",},
 	{},
 };
 
