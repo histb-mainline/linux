@@ -1,0 +1,21 @@
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/*
+ * Copyright (c) 2024 Yang Xiwen <forbidden405@outlook.com>
+ */
+
+#ifndef __DT_BINDINGS_CLOCK_HI3798MV200_SYSCTRL_H
+#define __DT_BINDINGS_CLOCK_HI3798MV200_SYSCTRL_H
+
+/* clocks provided by mcu CRG */
+#define HI3798MV200_MCU_BUS_CLK			0
+#define HI3798MV200_MCE_CLK			1
+#define HI3798MV200_IR_CLK			2
+#define HI3798MV200_TIMER01_CLK			3
+#define HI3798MV200_LEDC_CLK			4
+#define HI3798MV200_UART0_CLK			5
+#define HI3798MV200_WIFI_CLK			6
+#define HI3798MV200_LSADC_CLK			7
+
+#define HI3798MV200_SYSCTRL_CLK_COUNT		8
+
+#endif	/* __DT_BINDINGS_CLOCK_HI3798MV200_SYSCTRL_H */

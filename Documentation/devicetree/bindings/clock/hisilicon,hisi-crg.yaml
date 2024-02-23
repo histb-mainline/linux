@@ -23,6 +23,8 @@ properties:
               - hisilicon,hi3516cv300-sysctrl
               - hisilicon,hi3798cv200-crg
               - hisilicon,hi3798cv200-sysctrl
+              - hisilicon,hi3798mv200-crg
+              - hisilicon,hi3798mv200-sysctrl
           - const: syscon
           - const: simple-mfd
 
