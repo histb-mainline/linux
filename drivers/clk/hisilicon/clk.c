@@ -341,3 +341,27 @@ void __init hi6220_clk_register_divider(const struct hi6220_divider_clock *clks,
 		data->clk_data.clks[clks[i].id] = clk;
 	}
 }
+
+int hisi_clk_register_pll(struct device *dev, const struct hisi_pll_clock *clks,
+			  int nums, struct hisi_clock_data *data)
+{
+	struct clk *clk;
+	void __iomem *base = data->base;
+	int i;
+
+	for (i = 0; i < nums; i++) {
+		clk = devm_clk_register_hisi_pll(dev, clks[i].name, clks[i].parent_name,
+						 clks[i].flags, base + clks[i].offset);
+		if (IS_ERR(clk)) {
+			pr_err("%s: failed to register clock %s\n",
+			       __func__, clks[i].name);
+			return PTR_ERR(clk);
+		}
+
+
+		data->clk_data.clks[clks[i].id] = clk;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(hisi_clk_register_pll);
