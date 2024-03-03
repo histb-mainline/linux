@@ -90,6 +90,13 @@ config DRM_FSL_LDB
 	help
 	  Support for i.MX8MP DPI-to-LVDS on-SoC encoder.
 
+config DRM_HISTB_HDMI_1_4
+	tristate "HiSilicon STB HDMI 1.4 Tx"
+	depends on OF
+	help
+	  Support for HiSilicon STB HDMI 1.4 Tx, found on HiSilicon Hi3716MV410,
+	  Hi3716MV420, Hi3716DV100, Hi3796MV100, Hi3798MV100.
+
 config DRM_ITE_IT6505
 	tristate "ITE IT6505 DisplayPort bridge"
 	depends on OF
