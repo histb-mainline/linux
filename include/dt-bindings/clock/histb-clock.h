@@ -72,6 +72,7 @@
 #define HISTB_GPU_BUS_CLK		62
 #define HISTB_GPU_CORE_CLK		63
 #define HISTB_DMAC_CLK			64
+#define HISTB_MMC_SAP_DLL_MODE_CLK	65
 
 /* clocks provided by mcu CRG */
 #define HISTB_MCE_CLK			1
