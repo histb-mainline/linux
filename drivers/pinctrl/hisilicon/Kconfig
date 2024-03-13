@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+if (ARCH_HISI || COMPILE_TEST)
+
+config PINCTRL_HISILICON
+	bool
+
+config PINCTRL_HISTB
+	tristate "HiSilicon HiSTB SoCs pinctrl framework"
+	select PINCTRL_HISILICON
+	select GENERIC_PINCONF
+	select GENERIC_PINCTRL_GROUPS
+	select GENERIC_PINMUX_FUNCTIONS
+
+	help
+	  Support HiSTB SoCs pinctrl module
+
+menu "HiSTB pinctrl drivers"
+	depends on PINCTRL_HISTB
+
+config PINCTRL_HI3798MV2X
+	tristate "HiSilicon Hi3798MV2X pinctrl driver"
+	depends on PINCTRL_HISTB
+	help
+	  Support IOCONFIG core on Hi3798MV2X SoCs
+
+endmenu
+
+endif
