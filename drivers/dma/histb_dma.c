@@ -4,7 +4,7 @@
  *
  * Copyright (c) 2024 David Yang
  */
-
+#define DEBUG
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
@@ -114,7 +114,7 @@ struct histb_dma_desc {
 	dma_addr_t src_addr;
 	dma_addr_t dst_addr;
 	u32 lli;
-	u32 ctrl;
+	u32 ctrl;		// contains only lower 12bits: transfer sie
 
 	struct histb_dma_item *list;
 	dma_addr_t list_addr;
@@ -218,7 +218,6 @@ static int histb_dma_chan_halt(struct histb_dma_chan *chan)
 	void __iomem *cfg = base + DMAC_CHAN_CFG(id);
 
 	u32 val;
-	int ret;
 
 	val = readl_relaxed(cfg);
 	if (!(val & DMAC_CHAN_CFG_EN))
@@ -235,6 +234,26 @@ static int histb_dma_chan_halt(struct histb_dma_chan *chan)
 						 10, USEC_PER_SEC);
 }
 
+static int histb_dma_chan_enable(struct histb_dma_chan *chan)
+{
+	void __iomem *base	= chan->base;
+	unsigned int id		= chan->id;
+	void __iomem *cfg	= base + DMAC_CHAN_CFG(id);
+
+	u32 val;
+
+	val = readl_relaxed(cfg);
+	if (val & DMAC_CHAN_CFG_EN)
+		return 0;
+
+	if (val & DMAC_CHAN_CFG_HALT) {
+		val &= ~DMAC_CHAN_CFG_HALT;
+		writel(val, cfg);
+	}
+
+	return 0;
+}
+
 static int histb_dma_chan_wait_disable(struct histb_dma_chan *chan)
 {
 	void __iomem *base = chan->base;
@@ -247,23 +266,66 @@ static int histb_dma_chan_wait_disable(struct histb_dma_chan *chan)
 						 10, USEC_PER_SEC);
 }
 
+/*
+ *	start transferring on a channel, chan->desc should be set
+ *	to the descriptor to start
+ *	chan->desc should be valid
+ *	chan->desc.vdesc.lock should be held by caller
+ */
 static void histb_dma_chan_start(struct histb_dma_chan *chan)
 {
-	struct virt_dma_desc *vdesc;
-	int ret;
+	struct histb_dma_desc *desc = chan->desc;
+	void __iomem *base = chan->base;
+	unsigned int idx = chan->id;
+	u32 val;
 
-	ret = histb_dma_chan_halt(chan);
-	if (ret)
-		return;
+	histb_dma_chan_debug(chan);
 
-	if (!chan->desc) {
-		vdesc = vchan_next_desc(&chan->vchan);
-		if (!vdesc)
-			return;
-		list_del(&vdesc->node);
+	dev_dbg(chan->dev,
+		"start of desc: dst = %08llx, src = %08llx, ctrl = %08x\n",
+		desc->dst_addr, desc->src_addr, desc->ctrl);
 
-		chan->desc = to_histb_dma_desc(vdesc);
-	}
+	/*	configure address	*/
+	writel_relaxed(desc->src_addr, base + DMAC_CHAN_SRC_ADDR(idx));
+	writel_relaxed(desc->dst_addr, base + DMAC_CHAN_DST_ADDR(idx));
+	writel_relaxed(0,	       base + DMAC_CHAN_LLI(idx));
+
+	/*	configure control	*/
+	val = readl_relaxed(base + DMAC_CHAN_CTRL(idx));
+	val |= DMAC_CHAN_CTRL_INT;
+	val |= DMAC_CHAN_CTRL_PROT_CACHEABLE;
+	val |= DMAC_CHAN_CTRL_PROT_BUFFERABLE;
+	val |= DMAC_CHAN_CTRL_PROT_PRIVILEGED;
+	val |= DMAC_CHAN_CTRL_DST_INC;
+	val |= DMAC_CHAN_CTRL_SRC_INC;
+	val &= ~DMAC_CHAN_CTRL_DST_WIDTH;
+	val |= DMAC_WIDTH_32 << 21;
+	val &= ~DMAC_CHAN_CTRL_SRC_WIDTH;
+	val |= DMAC_WIDTH_32 << 18;
+#if 0
+	// TODO: burst size?
+	val &= ~DMAC_CHAN_CTRL_DST_BSIZE;
+	val |= DMAC_BSIZE_1 << 15;
+	val &= ~DMAC_CHAN_CTRL_SRC_BSIZE;
+	val |= DMAC_BSIZE_4 << 12;
+#endif
+	val &= ~DMAC_CHAN_CTRL_TX;
+	val |= desc->ctrl;
+	writel_relaxed(val, base + DMAC_CHAN_CTRL(idx));
+
+	/*	configure config	*/
+	val = readl_relaxed(base + DMAC_CHAN_CFG(idx));
+	val &= ~DMAC_CHAN_CFG_W0;
+	val |= DMAC_CHAN_CFG_INT_TC_MASK;
+	val |= DMAC_CHAN_CFG_INT_ERR_MASK;
+	val &= ~DMAC_CHAN_CFG_FLOW;
+	val |= DMAC_FLOW_MMC << 11;
+	val |= DMAC_CHAN_CFG_EN;
+	writel_relaxed(val, base + DMAC_CHAN_CFG(idx));
+
+	histb_dma_chan_debug(chan);
+
+	return;
 }
 
 static void histb_dma_desc_free(struct virt_dma_desc *vdesc)
@@ -296,14 +358,14 @@ histb_dma_chan_init(struct histb_dma_chan *chan, struct histb_dma_priv *priv,
 static int histb_dma_alloc_chan_resources(struct dma_chan *dmachan)
 {
 	struct histb_dma_chan *chan = to_histb_dma_chan(dmachan);
-
-	return 0;
+	return histb_dma_chan_enable(chan);
 }
 
 static void histb_dma_free_chan_resources(struct dma_chan *dmachan)
 {
 	struct histb_dma_chan *chan = to_histb_dma_chan(dmachan);
 
+	histb_dma_chan_halt(chan);
 	vchan_free_chan_resources(&chan->vchan);
 }
 
@@ -316,15 +378,23 @@ histb_dma_prep_dma_memop(struct dma_chan *dmachan, dma_addr_t dst,
 
 	struct histb_dma_desc *desc;
 
+	dev_dbg(chan->dev, "prep dma operation on channel %d\n", chan->id);
+	dev_dbg(chan->dev, "dst = %llu, src = %llu, len = %zu\n", dst, src, len);
+
 	desc = kzalloc(sizeof(*desc), GFP_NOWAIT);
 	if (!desc)
 		goto err;
 
 	desc->src_addr = src;
 	desc->dst_addr = dst;
+
+#if 0
 	desc->ctrl = DMAC_CHAN_CTRL_INT | DMAC_CHAN_CTRL_PROT |
 		     DMAC_CHAN_CTRL_DST_INC |
 		     (DMAC_WIDTH_32 << 21) | (DMAC_WIDTH_32 << 18) | (len / 4);
+#endif
+
+	desc->ctrl = len / 4;
 	if (value)
 		desc->value = value;
 	else
@@ -354,6 +424,7 @@ histb_dma_prep_dma_memset(struct dma_chan *dmachan, dma_addr_t dst, int value,
 	int *buf;
 	dma_addr_t buf_addr;
 
+	// TODO: free
 	buf = dma_pool_alloc(chan->pool, GFP_NOWAIT, &buf_addr);
 	if (!buf)
 		return NULL;
@@ -382,6 +453,25 @@ histb_dma_tx_status(struct dma_chan *dmachan, dma_cookie_t cookie,
 static int histb_dma_terminate_all(struct dma_chan *dmachan)
 {
 	struct histb_dma_chan *chan = to_histb_dma_chan(dmachan);
+	unsigned long int flags;
+	LIST_HEAD(list);
+
+	spin_lock_irqsave(&chan->vchan.lock, flags);
+
+	int ret = histb_dma_chan_halt(chan);
+	if (ret < 0)
+		return ret;
+
+	if (chan->desc) {
+		vchan_terminate_vdesc(&chan->desc->vdesc);
+		chan->desc = NULL;
+	}
+
+	vchan_get_all_descriptors(&chan->vchan, &list);
+
+	spin_unlock_irqrestore(&chan->vchan.lock, flags);
+
+	vchan_dma_desc_free_list(&chan->vchan, &list);
 
 	return 0;
 }
@@ -389,6 +479,8 @@ static int histb_dma_terminate_all(struct dma_chan *dmachan)
 static void histb_dma_synchronize(struct dma_chan *dmachan)
 {
 	struct histb_dma_chan *chan = to_histb_dma_chan(dmachan);
+	histb_dma_chan_wait_disable(chan);
+	return;
 }
 
 static void histb_dma_issue_pending(struct dma_chan *dmachan)
@@ -399,36 +491,71 @@ static void histb_dma_issue_pending(struct dma_chan *dmachan)
 
 	spin_lock_irqsave(&chan->vchan.lock, flags);
 	/*
-	if (vchan_issue_pending(&chan->vchan) && !chan->desc && !chan->busy) {
+	 *	chan->desc is NULL when the channel is available
+	 */
+	if (vchan_issue_pending(&chan->vchan) && !chan->desc) {
 		pr_debug("%s %u: vchan %pK issued\n", __func__, chan->id,
 			 &chan->vchan);
-		histb_dma_start_transfer(chan);
 
-	}*/
+		struct virt_dma_desc *vnext	= vchan_next_desc(&chan->vchan);
+		struct histb_dma_desc *next	= to_histb_dma_desc(vnext);
+		chan->desc			= next;
+		list_del(&vnext->node);
+		histb_dma_chan_start(chan);
+	}
 	spin_unlock_irqrestore(&chan->vchan.lock, flags);
 }
 
 /******** irq ********/
 
+static void
+histb_dma_handle_chan(struct histb_dma_chan *chan)
+{
+	unsigned long int flags;
+	spin_lock_irqsave(&chan->vchan.lock, flags);
+
+	struct histb_dma_desc *old = chan->desc;
+	vchan_cookie_complete(&old->vdesc);
+
+	struct virt_dma_desc *vnext = vchan_next_desc(&chan->vchan);
+	if (!vnext) {		// no more issued descriptors
+		chan->desc = NULL;
+		goto end;
+	}
+
+	/*	set new descriptor	*/
+	struct histb_dma_desc *next = to_histb_dma_desc(vnext);
+	chan->desc = next;
+	list_del(&vnext->node);
+
+	histb_dma_chan_start(chan);	// start the new descritpor
+
+end:
+	spin_unlock_irqrestore(&chan->vchan.lock, flags);
+	return;
+}
+
 static irqreturn_t histb_dma_handle(int irq, void *dev_id)
 {
 	struct histb_dma_priv *priv = dev_id;
 
-	u32 val;
-
-	val = readl_relaxed(priv->base + DMAC_INT_STATUS);
-	if (!val)
+	u32 stat = readl_relaxed(priv->base + DMAC_INT_STATUS);
+	if (!stat)
 		return IRQ_NONE;
 
-	val = readl_relaxed(priv->base + DMAC_INT_TC_STATUS);
-	if (val)
-		writel_relaxed(val, priv->base + DMAC_INT_TC_CLR);
+	u32 tc  = readl_relaxed(priv->base + DMAC_INT_TC_STATUS);
+	if (tc)
+		writel_relaxed(tc, priv->base + DMAC_INT_TC_CLR);
+	u32 err = readl_relaxed(priv->base + DMAC_INT_ERR_STATUS);
+	if (err)
+		writel_relaxed(tc, priv->base + DMAC_INT_ERR_CLR);
 
-	val = readl_relaxed(priv->base + DMAC_INT_ERR_STATUS);
-	if (val)
-		writel_relaxed(val, priv->base + DMAC_INT_ERR_CLR);
-
-printk("%s %d %x\n", __func__, __LINE__, readl_relaxed(priv->base + DMAC_CHAN_SRC_ADDR(0)));
+	for (unsigned int i = 0; i < DMAC_CHAN_NUM; i++) {
+		if (err & BIT(i))
+			dev_err(priv->dev, "Channel %i transfer error\n", i);
+		else if (tc & BIT(i))
+			histb_dma_handle_chan(priv->chans + i);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -453,7 +580,6 @@ static int __maybe_unused histb_dma_suspend(struct device *dev)
 static int __maybe_unused histb_dma_resume(struct device *dev)
 {
 	struct histb_dma_priv *priv = dev_get_drvdata(dev);
-
 	return clk_bulk_prepare(priv->clks_n, priv->clks) ?:
 	       pm_runtime_force_resume(dev);
 }
@@ -615,7 +741,7 @@ static int histb_dma_probe(struct platform_device *pdev)
 	dmadev->dev = dev;
 	dmadev->descriptor_reuse = true;
 	dmadev->directions = BIT(DMA_MEM_TO_MEM);
-	//dmadev->device_alloc_chan_resources = histb_dma_alloc_chan_resources;
+	dmadev->device_alloc_chan_resources = histb_dma_alloc_chan_resources;
 	dmadev->device_free_chan_resources = histb_dma_free_chan_resources;
 	dmadev->device_prep_dma_memcpy = histb_dma_prep_dma_memcpy;
 	dmadev->device_prep_dma_memset = histb_dma_prep_dma_memset;
@@ -629,10 +755,11 @@ static int histb_dma_probe(struct platform_device *pdev)
 		histb_dma_chan_init(&priv->chans[id], priv, id, pool);
 	}
 
-	/*ret = dmaenginem_async_device_register(dmadev);
+	ret = dmaenginem_async_device_register(dmadev);
 	if (ret)
-		goto err_clk;*/
+		goto err_clk;
 
+#if 0
 	unsigned int *buf;
 	dma_addr_t buf_addr;
 	buf = dmam_alloc_attrs(dev, PAGE_SIZE, &buf_addr, GFP_KERNEL | __GFP_ZERO, 0);
@@ -670,12 +797,14 @@ printk("%s %d %llx %llx\n", __func__, __LINE__, buf_addr, buf_addr + PAGE_SIZE /
 	val |= DMAC_FLOW_MMC << 11;
 	val |= DMAC_CHAN_CFG_EN;
 	writel_relaxed(val, priv->base + DMAC_CHAN_CFG(0));
+#endif // #if 0
 
-	/*pm_runtime_set_autosuspend_delay(dev, MSEC_PER_SEC);
-	pm_runtime_use_autosuspend(dev);
-	pm_runtime_set_active(dev);
-	pm_runtime_irq_safe(dev);
-	pm_runtime_enable(dev);*/
+//	pm_runtime_set_autosuspend_delay(dev, MSEC_PER_SEC);
+//	pm_runtime_use_autosuspend(dev);
+//	pm_runtime_set_active(dev);
+//	pm_runtime_irq_safe(dev);
+//	pm_runtime_enable(dev);
+
 	return 0;
 
 err_clk:
