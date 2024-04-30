@@ -452,7 +452,7 @@ static const struct clk_ops hisi_clk_pll_ops = {
 	.recalc_rate = clk_pll_recalc_rate,
 };
 
-static void hisi_clk_register_pll(struct hi3559av100_pll_clock *clks,
+static void _hisi_clk_register_pll(struct hi3559av100_pll_clock *clks,
 			   int nums, struct hisi_clock_data *data, struct device *dev)
 {
 	void __iomem *base = data->base;
@@ -515,7 +515,7 @@ static struct hisi_clock_data *hi3559av100_clk_register(
 	if (ret)
 		return ERR_PTR(ret);
 
-	hisi_clk_register_pll(hi3559av100_pll_clks,
+	_hisi_clk_register_pll(hi3559av100_pll_clks,
 			      ARRAY_SIZE(hi3559av100_pll_clks), clk_data, &pdev->dev);
 
 	ret = hisi_clk_register_mux(hi3559av100_mux_clks_crg,
