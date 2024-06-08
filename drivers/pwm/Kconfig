@@ -237,6 +237,16 @@ config PWM_HIBVT
 	  To compile this driver as a module, choose M here: the module
 	  will be called pwm-hibvt.
 
+config PWM_HISI_PMC_PWM
+	tristate "HiSilicon PMC PWM support"
+	depends on ARCH_HISI || COMPILE_TEST
+	depends on COMMON_CLK
+	help
+	  Generic PMC PWM driver for HiSilicon SoCs
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called pwm-hisi-pmc-pwm.
+
 config PWM_IMG
 	tristate "Imagination Technologies PWM driver"
 	depends on HAS_IOMEM
