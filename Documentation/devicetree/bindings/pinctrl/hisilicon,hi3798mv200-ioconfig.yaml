@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/pinctrl/hisilicon,hi3798mv200-ioconfig.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon Hi3798MV200 SoC IOCONFIG module
+
+maintainers:
+  - Yang Xiwen <forbidden405@outlook.com>
+
+description: Hi3798MV200 IOCONFIG pinmux&pinconf controller
+
+properties:
+  compatible:
+    const: hisilicon,hi3798mv200-ioconfig
+
+  reg:
+    maxItems: 1
+
+  "#pinctrl-cells":
+    const: 1
+
+patternProperties:
+  "-state$":
+    oneOf:
+      - $ref: "#/$defs/hi3798mv200-iocfg-pin-state"
+      - patternProperties:
+          "-pins?$":
+            $ref: "#/$defs/hi3798mv200-iocfg-pin-state"
+        unevaluatedProperties: false
+
+$defs:
+  hi3798mv200-iocfg-pin-state:
+    $ref: hisilicon,histb-pinctrl-common.yaml#/$defs/histb-pin-state
+    unevaluatedProperties: false
+
+    properties:
+      pins:
+        items:
+          enum: [ Y19, W19, AA20, Y20, V19, Y21, W20, W21, V20, V21, U20, U21,
+                  T18, T19, T20, R20, R21, P20, R19, K18, J17, J18, H17, H18, K20,
+                  K19, J20, J19, H21, H20, H19, G20, G19, F21, F20, F19, E20, E19,
+                  D21, E18, C20, D19, B21, B18, C17, B17, A17, C16, B16, B4, C4, A3,
+                  B3, A2, B2, A6, C6, C5, C3, D4, D3, B1, C2, C1, A5, D5 ]
+
+      function:
+        enum: [ gpio, bootsel, clkout, emmc, fe_led, hdmitx, i2c_scl, i2c_sda,
+                i2s_clk, i2s_data, i2s_ws, jtag, nand, pmc, rgmii, rmii, sata, sdio,
+                sim, spdif, spi, spi_flash, tsi0_d0, tsi0_d1, tsi0_data, tsi1_data,
+                tsi2_data, tsi3_data, tso, tsi_clk, tsi_sync, tsi_valid, uart ]
+
+allOf:
+  - $ref: hisilicon,histb-pinctrl-common.yaml#
+
+required:
+  - compatible
+  - reg
+
+unevaluatedProperties: false
