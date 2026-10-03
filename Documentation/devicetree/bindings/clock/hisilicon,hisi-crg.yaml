@@ -10,8 +10,8 @@ maintainers:
   - David Yang <mmyangfl@gmail.com>
 
 description: |
-  The CRG module provides clock and reset signals to various modules within
-  the SoC.
+  The CRG module provides clock and reset signals to various modules within the
+  SoC.
 
 properties:
   compatible:
@@ -21,11 +21,13 @@ properties:
           - enum:
               - hisilicon,hi3516cv300-sysctrl
               - hisilicon,hi3798cv200-sysctrl
+              - hisilicon,hi3798mv100-sysctrl
           - const: syscon
       - items:
           - enum:
               - hisilicon,hi3516cv300-crg
               - hisilicon,hi3798cv200-crg
+              - hisilicon,hi3798mv100-crg
           - const: syscon
           - const: simple-mfd
 
@@ -35,22 +37,22 @@ properties:
   '#clock-cells':
     const: 1
     description:
-      Each clock is assigned an identifier and client nodes use that
-      identifier to specify the clock they consume. The identifiers of a
-      given SoC are listed in the matching dt-bindings/clock header.
+      Each clock is assigned an identifier and client nodes use that identifier
+      to specify the clock they consume. The identifiers of a given SoC are
+      listed in the matching dt-bindings/clock header.
 
   '#reset-cells':
     const: 2
     description:
-      A reset signal is controlled by a bit in a register of the CRG module.
-      The first cell is the register offset relative to the base address, the
-      second cell the bit index in that register.
+      A reset signal is controlled by a bit in a register of the CRG module. The
+      first cell is the register offset relative to the base address, the second
+      cell the bit index in that register.
 
   reset-controller:
     type: object
     description:
-      The GMAC PHY reset of the Hi3798CV200 core CRG, described with the
-      generic syscon reset binding.
+      The GMAC PHY reset of the Hi3798CV200 core CRG, described with the generic
+      syscon reset binding.
 
 required:
   - compatible
