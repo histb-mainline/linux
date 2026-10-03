@@ -147,6 +147,18 @@ config DMA_BCM2835
 	select DMA_ENGINE
 	select DMA_VIRTUAL_CHANNELS
 
+config DMA_HISTB
+	tristate "HiSilicon STB DMA controller support"
+	depends on ARCH_HISI || COMPILE_TEST
+	select DMA_ENGINE
+	select DMA_VIRTUAL_CHANNELS
+	help
+	  Support the HiSilicon STB DMA controller (DMAC). Its Hi3798MV100
+	  instance has four channels, each driving a linked list of transfer
+	  items, and it services memory to memory, memory to peripheral and
+	  peripheral to memory copies using a hardware request line for slave
+	  handshaking.
+
 config DMA_JZ4780
 	tristate "JZ4780 DMA support"
 	depends on MIPS || COMPILE_TEST
