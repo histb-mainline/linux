@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/dma/hisilicon,hi3798mv100-dmac.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon STB SoCs DMA Controller
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+allOf:
+  - $ref: dma-controller.yaml#
+
+properties:
+  compatible:
+    const: hisilicon,hi3798mv100-dmac
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  resets:
+    maxItems: 1
+
+  dma-channels:
+    const: 4
+
+  "#dma-cells":
+    const: 1
+    description:
+      The cell is the peripheral request line used for hardware
+      handshaking.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - "#dma-cells"
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/clock/hisilicon,hi3798mv100-crg.h>
+
+    dma-controller@9870000 {
+        compatible = "hisilicon,hi3798mv100-dmac";
+        reg = <0x9870000 0x10000>;
+        interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&crg HI3798MV100_DMAC_CLK>;
+        resets = <&crg 0xa4 4>;
+        dma-channels = <4>;
+        #dma-cells = <1>;
+    };
