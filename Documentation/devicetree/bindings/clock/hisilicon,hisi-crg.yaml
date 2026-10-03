@@ -21,11 +21,13 @@ properties:
           - enum:
               - hisilicon,hi3516cv300-sysctrl
               - hisilicon,hi3798cv200-sysctrl
+              - hisilicon,hi3798mv100-sysctrl
           - const: syscon
       - items:
           - enum:
               - hisilicon,hi3516cv300-crg
               - hisilicon,hi3798cv200-crg
+              - hisilicon,hi3798mv100-crg
           - const: syscon
           - const: simple-mfd
 
