@@ -487,6 +487,13 @@ config REGULATOR_HI6421V600
 	  HiSilicon Hi6421v600 PMU / Codec IC.
 	  This is used on Kirin 3670 boards, like HiKey 970.
 
+config REGULATOR_HISI_STB
+	tristate "HiSilicon STB voltage regulator support"
+	depends on ARCH_HISI || COMPILE_TEST
+	help
+	  This driver provides support for the voltage regulators of the
+	  HiSilicon STB SoCs, including Hi3798cv200, Hi3798mv100, Hi3798mv200.
+
 config REGULATOR_ISL9305
 	tristate "Intersil ISL9305 regulator"
 	depends on I2C
