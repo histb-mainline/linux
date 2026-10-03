@@ -55,6 +55,18 @@ config COMMON_CLK_HI3798CV200
 	help
 	  Build the clock driver for hi3798cv200.
 
+config COMMON_CLK_HI3798MV100
+	tristate "Hi3798MV100 Clock Driver"
+	depends on ARCH_HISI || COMPILE_TEST
+	select RESET_HISI
+	select COMMON_CLK_HISI
+	default ARCH_HISI
+	help
+	  Build the clock driver for the Hi3798MV100. It registers the
+	  clocks and the reset cells of the core CRG and the system
+	  controller, and is instantiated as a simple MFD child of the
+	  syscon the SoC control block provides.
+
 config COMMON_CLK_HI6220
 	bool "Hi6220 Clock Driver"
 	depends on ARCH_HISI || COMPILE_TEST
