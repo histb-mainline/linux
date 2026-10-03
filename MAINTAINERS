@@ -11925,6 +11925,14 @@ F:	Documentation/devicetree/bindings/clock/hisilicon,hisi-crg.yaml
 F:	drivers/clk/hisilicon/crg-hi3798mv100.c
 F:	include/dt-bindings/clock/hisilicon,hi3798mv100-*.h
 
+HISILICON STB DMA ENGINE DRIVER
+M:	David Yang <mmyangfl@gmail.com>
+L:	dmaengine@vger.kernel.org
+L:	linux-arm-kernel@lists.infradead.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/dma/hisilicon,hi3798mv100-dmac.yaml
+F:	drivers/dma/histb_dma.c
+
 HISILICON STB VOLTAGE REGULATOR DRIVER
 M:	David Yang <mmyangfl@gmail.com>
 L:	linux-kernel@vger.kernel.org
