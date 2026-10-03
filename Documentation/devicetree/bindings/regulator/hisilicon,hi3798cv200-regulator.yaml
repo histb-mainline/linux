@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/hisilicon,hi3798cv200-regulator.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon STB voltage regulator
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+description: |
+  HiSilicon STB SoCs (Hi3798cv200/mv100/mv200) provide PWM outputs in the PMOC
+  block which drive an external converter.
+
+  The voltage range depends on the board design: reference designs specify 0.65
+  V to 1.15 V for the Hi3798cv200, and 0.7 V to 1.25 V for the Hi3798mv200; a
+  customized board has to figure out its own. The regulator itself has no other
+  source of calibration.
+
+properties:
+  compatible:
+    const: hisilicon,hi3798cv200-regulator
+
+  reg:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - regulator-min-microvolt
+  - regulator-max-microvolt
+
+allOf:
+  - $ref: regulator.yaml#
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    vddcpu: regulator@8a23018 {
+        compatible = "hisilicon,hi3798cv200-regulator";
+        reg = <0x8a23018 0x4>;
+        regulator-name = "vdd-cpu";
+        regulator-min-microvolt = <650000>;
+        regulator-max-microvolt = <1150000>;
+        regulator-always-on;
+    };
