@@ -15,3 +15,11 @@ config DRM_HISTB_VO
 
 	  If in doubt, say N.
 
+config DRM_HISTB_VODUMP
+	bool "Read-only VDP/HDMI register snapshot"
+	depends on DRM && OF && ARM
+	help
+	  Snapshot the display pipeline exactly as the vendor fastboot left it
+	  while scanning out its boot logo, without writing any device
+	  register.  For diffing against the DRM drivers; say N for normal
+	  use.
