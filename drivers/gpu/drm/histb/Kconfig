@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 config DRM_HISTB_VDP2
 	tristate "DRM Support for HiSTB VDP v2 display engine"
 	depends on DRM && OF && ARM
@@ -7,11 +8,19 @@ config DRM_HISTB_VDP2
 	select DRM_BRIDGE_CONNECTOR
 	select DRM_CLIENT_SELECTION
 	help
-	  Choose this option for DRM support for the VDP v2 display engine
-	  found on HiSilicon HiSTB SoCs such as the hi3798mv100 and
-	  the hi3796mv100.  It exposes one CRTC with a primary plane and sends
-	  its output to the HDMI transmitter selected through the device
-	  tree of_graph port@0 endpoint.
+	  Choose this option for DRM support for the VDP v2 display engine found
+	  on HiSilicon HiSTB SoCs such as the hi3798mv100 and the hi3796mv100.
+	  It exposes one CRTC with a primary plane and sends its output to the
+	  HDMI transmitter selected through the device tree of_graph port@0
+	  endpoint.
 
 	  If in doubt, say N.
 
+config DRM_HISTB_VODUMP
+	bool "Read-only VDP/HDMI register snapshot"
+	depends on DRM && OF && ARM
+	help
+	  Snapshot the display pipeline exactly as the
+	  vendor fastboot left it while scanning out its
+	  boot logo, without writing any device register.
+	  For diffing against the DRM drivers; say N for normal use.
