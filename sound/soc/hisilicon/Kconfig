@@ -7,4 +7,14 @@ config SND_I2S_HI6210_I2S
 	help
 	  Hisilicon I2S
 
+config SND_SOC_HISTB_AIAO
+	tristate "HiSTB AIAO I2S transmit port"
+	depends on ARCH_HISI || COMPILE_TEST
+	help
+	  Say Y or M here if you want to use the I2S transmit ports of the
+	  AIAO audio block found on HiSilicon STB SoCs such as the
+	  Hi3798MV100.  Each port is an I2S master with its own clock
+	  generator and its own ring-buffer engine, and on these boards the
+	  one wired to the HDMI transmitter is what carries its audio.
+
 endmenu
