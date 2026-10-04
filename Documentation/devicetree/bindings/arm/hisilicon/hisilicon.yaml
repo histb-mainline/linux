@@ -30,6 +30,11 @@ properties:
           - const: hisilicon,hi3798cv200-poplar
           - const: hisilicon,hi3798cv200
 
+      - description: Hi3798MV100 based boards.
+        items:
+          - const: hisilicon,hi3798mv100-ec6108v9c
+          - const: hisilicon,hi3798mv100
+
       - description: Hi4511 Board
         items:
           - const: hisilicon,hi3620-hi4511
