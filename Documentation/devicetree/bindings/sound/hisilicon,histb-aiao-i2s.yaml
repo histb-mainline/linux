@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/hisilicon,histb-aiao-i2s.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon STB AIAO I2S transmit port
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+description: |
+  The Audio In And Out block of HiSilicon STB SoCs. Its transmit ports
+  generate their own bit and frame clocks (so the port is the I2S master)
+  and feed the ring buffer straight out of memory with an internal engine,
+  which is why there is no dmas property here.
+
+  On hi3798mv100 the HDMI-capable port is wired inside the SoC to the HDMI
+  transmitter, so the codec side needs no phandle beyond the transmitter's
+  own #sound-dai-cells.
+
+properties:
+  compatible:
+    const: hisilicon,histb-aiao-i2s
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: |
+      Level interrupt reporting the port's buffer conditions (watermarks,
+      trans_finish per TX_TRANS_SIZE bytes, overrun/underrun).  Optional because
+      the driver times its period boundaries itself: the trans_finish interrupt
+      does not fire for a period-sized TX_TRANS_SIZE on the silicon this was
+      tested on.
+
+  clocks:
+    maxItems: 1
+    description: The block clock gate (PERI_CRG70 bit 0).
+
+  resets:
+    maxItems: 1
+    description: The block soft reset (PERI_CRG70 bit 4).
+
+  '#sound-dai-cells':
+    const: 0
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - resets
+  - '#sound-dai-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/hisilicon,hi3798mv100-crg.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    audio@8cd0000 {
+        compatible = "hisilicon,histb-aiao-i2s";
+        reg = <0x8cd0000 0x10000>;
+        interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&crg HI3798MV100_AIAO_CLK>;
+        resets = <&crg 0x118 4>;
+        #sound-dai-cells = <0>;
+    };
