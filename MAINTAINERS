@@ -8162,6 +8162,17 @@ T:	git https://gitlab.freedesktop.org/drm/misc/kernel.git
 F:	Documentation/devicetree/bindings/display/panel/himax,hx8394.yaml
 F:	drivers/gpu/drm/panel/panel-himax-hx8394.c
 
+DRM DRIVER FOR HISILICON STB VO AND HDMI TRANSMITTER
+M:	David Yang <mmyangfl@gmail.com>
+L:	dri-devel@lists.freedesktop.org
+S:	Supported
+F:	Documentation/devicetree/bindings/display/bridge/hisilicon,histb-hdmi-1-4.yaml
+F:	Documentation/devicetree/bindings/display/hisilicon/hisilicon,histb-vo.yaml
+F:	drivers/gpu/drm/bridge/histb-hdmi-14.c
+F:	drivers/gpu/drm/bridge/sii9134.c
+F:	drivers/gpu/drm/bridge/sii9134.h
+F:	drivers/gpu/drm/histb/
+
 DRM DRIVER FOR HX8357D PANELS
 S:	Orphan
 T:	git https://gitlab.freedesktop.org/drm/misc/kernel.git

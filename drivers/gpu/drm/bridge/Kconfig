@@ -91,6 +91,19 @@ config DRM_FSL_LDB
 	help
 	  Support for i.MX8MP DPI-to-LVDS on-SoC encoder.
 
+config DRM_HISTB_HDMI_1_4
+	tristate "HiSilicon STB HDMI 1.4 Tx"
+	depends on OF
+	select DRM_KMS_HELPER
+	select REGMAP
+	select SND_SOC_HDMI_CODEC if SND_SOC
+	help
+	  Say Y or M here if you want to use the HDMI 1.4 transmitter found
+	  on HiSilicon STB SoCs such as the Hi3716DV100, Hi3716MV410,
+	  Hi3716MV420, Hi3796MV100 and Hi3798MV100.  It covers the controller
+	  registers plus, on the parts that have one, the on-chip SiI9134
+	  transmitter and its HDMI audio codec DAI.
+
 config DRM_I2C_NXP_TDA998X
 	tristate "NXP Semiconductors TDA998X HDMI encoder"
 	default m if DRM_TILCDC
