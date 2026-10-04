@@ -1,0 +1,1174 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * DRM driver for the HiSTB VDP v2 display engine, found on hi3798mv100 /
+ * hi3796mv100 / hi3716dv100 SoCs.
+ *
+ * The VDP block at 0xf8cc0000 provides two display channels. This driver
+ * exposes DHD0 (the HD channel) as a single CRTC with a primary plane fed by
+ * the G0 graphics (RGB) layer, routed G0 -> GP0 -> MIXG0 -> CBM(MIX0) -> DHD0
+ * -> HDMI. Scanout data leaves the VDP towards the HDMI transmitter selected
+ * through of_graph port@0; the downstream node is a drm_bridge
+ * (hisilicon,hi3798mv100-hdmi).
+ *
+ * Clocking: the HD channel is fed by the CRG's HD PLL through a post divider
+ * and CRG54's vo_hd_clk_div (offset 0xd8), i.e. the channel clock is half the
+ * PLL output. drivers/clk/hisilicon models that as "clk_vo_hd", which is also
+ * what the HDMI transmitter receives 1:1, so the two blocks cannot disagree
+ * about the pixel clock. The driver enables the CRG54 gates by hand and pulses
+ * CRG54 bit 30 before it configures anything, so the display controller comes
+ * up from its reset defaults rather than from the state it was handed over in.
+ */
+
+#include <linux/bitfield.h>
+#include <linux/delay.h>
+#include <linux/clk.h>
+#include <linux/component.h>
+#include <linux/io.h>
+#include <linux/minmax.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_reserved_mem.h>
+#include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
+#include <linux/reset.h>
+
+#include <drm/drm_atomic.h>
+#include <drm/drm_atomic_helper.h>
+#include <drm/drm_bridge.h>
+#include <drm/drm_bridge_connector.h>
+#include <drm/drm_crtc.h>
+#include <drm/drm_damage_helper.h>
+#include <drm/drm_drv.h>
+#include <drm/clients/drm_client_setup.h>
+#include <drm/drm_fbdev_dma.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_fb_dma_helper.h>
+#include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_managed.h>
+#include <drm/drm_mode_config.h>
+#include <drm/drm_of.h>
+#include <drm/drm_plane_helper.h>
+#include <drm/drm_probe_helper.h>
+#include <drm/drm_vblank.h>
+
+#include "histb-vdp2-regs.h"
+
+struct histb_vdp2 {
+	struct device		*dev;
+	void __iomem		*regs;
+
+	struct clk		*clk_pix;	/* HD channel clock, shared with HDMI */
+	struct clk		*clk_vo;	/* CRG54 gate group of the channel */
+
+	struct reset_control	*rst;
+
+	int			irq;
+
+	struct histb_vdp2_display	*disp;	/* NULL unless the pipeline is bound */
+};
+
+/*
+ * The DRM objects belong to the aggregate driver, not to the platform device:
+ * they come into existence when the pipeline the device tree describes is up
+ * and go away when it comes down, which can happen while this device stays
+ * probed (the transmitter is a component of the aggregate). devm cannot cover
+ * that lifetime, so this block is allocated by the aggregate's bind and
+ * released by its unbind.
+ */
+struct histb_vdp2_display {
+	struct histb_vdp2		*vdp;
+	struct drm_device	*drm;
+
+	struct drm_plane	primary;
+	struct drm_crtc		crtc;
+	struct drm_encoder	encoder;
+};
+
+static inline struct histb_vdp2 *plane_to_vdp(struct drm_plane *plane)
+{
+	return container_of(plane, struct histb_vdp2_display, primary)->vdp;
+}
+
+static inline struct histb_vdp2 *crtc_to_vdp(struct drm_crtc *crtc)
+{
+	return container_of(crtc, struct histb_vdp2_display, crtc)->vdp;
+}
+
+/*
+ * The mode's pixel clock is the HD channel clock, which the CRG driver builds
+ * from the HD PLL's post divider and CRG54's vo_hd_clk_div. With vo_hd_clk_div
+ * at /2 the PLL runs at twice the pixel clock: 297MHz for 1080p60, 148.5MHz for
+ * 720p and the 1080p24-30 family. Requesting the channel rate is therefore
+ * enough for the transmitter to see the same clock, since it takes vo_hd 1:1.
+ */
+static int histb_vdp2_set_pixclk(struct histb_vdp2 *vdp, unsigned int mode_khz)
+{
+	unsigned long rate = (unsigned long)mode_khz * 1000;
+	int ret;
+
+	ret = clk_set_rate(vdp->clk_pix, rate);
+	if (ret) {
+		dev_err(vdp->dev, "failed to set pixel clock to %lu Hz: %d\n",
+			rate, ret);
+		return ret;
+	}
+
+	dev_dbg(vdp->dev, "pixel clock %lu Hz for mode clock %u kHz\n",
+		clk_get_rate(vdp->clk_pix), mode_khz);
+	return 0;
+}
+
+static inline u32 vo_read(struct histb_vdp2 *vdp, u32 off)
+{
+	return readl_relaxed(vdp->regs + off);
+}
+
+static inline void vo_write(struct histb_vdp2 *vdp, u32 off, u32 val)
+{
+	writel_relaxed(val, vdp->regs + off);
+}
+
+/* ------------------------------------------------------------------ */
+/* Plane (G0 graphics layer)                                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * No per-pixel alpha is programmed in the atomic update path, so the ARGB
+ * format is deliberately not exposed (drm core would warn about alpha formats
+ * without blend mode support).
+ */
+static const u32 histb_vdp2_formats[] = {
+	DRM_FORMAT_XRGB8888,
+};
+
+/* `value - 1`, clamped so that a zero porch/sync width never underflows */
+static u32 histb_vdp2_m1(u32 v)
+{
+	return max(v, 1u) - 1;
+}
+
+static void histb_vdp2_g0_set(struct histb_vdp2 *vdp, const struct drm_framebuffer *fb,
+			    struct drm_gem_dma_object *gem, bool enable)
+{
+	u32 ctrl, ifmt, palpha;
+
+	if (!enable) {
+		ctrl = vo_read(vdp, G0_CTRL);
+		ctrl &= ~G0_CTRL_SURFACE_EN;
+		vo_write(vdp, G0_CTRL, ctrl);
+		vo_write(vdp, G0_UPD, G0_UPD_REGUP);
+		return;
+	}
+
+	/*
+	 * Pixel format. The A-prefixed hardware codes consume the buffer's
+	 * alpha byte, so an XRGB framebuffer must not be described as ARGB8888:
+	 * every pixel would carry alpha 0x00 and the layer would composite as
+	 * fully transparent.
+	 */
+	switch (fb->format->format) {
+	case DRM_FORMAT_ARGB8888:
+		ifmt = G0_IFMT_ARGB8888;
+		palpha = G0_CBMPARA_PALPHA_EN;
+		break;
+	default:
+		ifmt = G0_IFMT_KRGB888;
+		palpha = 0;
+		break;
+	}
+
+	/*
+	 * bitext, read_mode and upd_mode all have to be set for a layer that
+	 * drives a panel. Left at 0, read_mode means that the fetch follows the
+	 * interface's field coding instead of running progressive.
+	 */
+	ctrl = vo_read(vdp, G0_CTRL);
+	ctrl &= ~(G0_CTRL_IFMT | G0_CTRL_BITEXT | G0_CTRL_READ_MODE |
+		  G0_CTRL_UPD_MODE);
+	ctrl |= FIELD_PREP(G0_CTRL_IFMT, ifmt) |
+		FIELD_PREP(G0_CTRL_BITEXT, G0_BITEXT_3RD) |
+		G0_CTRL_READ_MODE | G0_CTRL_UPD_MODE;
+	vo_write(vdp, G0_CTRL, ctrl);
+
+	/* opaque surface, no colour key, no per-pixel alpha */
+	ctrl = vo_read(vdp, G0_CBMPARA);
+	ctrl &= ~(G0_CBMPARA_GALPHA | G0_CBMPARA_PALPHA_EN |
+		  G0_CBMPARA_KEY_EN | G0_CBMPARA_KEY_MODE);
+	ctrl |= FIELD_PREP(G0_CBMPARA_GALPHA, 0xff) | palpha;
+	vo_write(vdp, G0_CBMPARA, ctrl);
+
+	vo_write(vdp, G0_ADDR, (u32)(gem->dma_addr + fb->offsets[0]));
+	/* G0_STRIDE is programmed in units of 16 bytes */
+	vo_write(vdp, G0_STRIDE,
+		 FIELD_PREP(G0_STRIDE_MASK, fb->pitches[0] / 16));
+	vo_write(vdp, G0_IRESO,
+		 FIELD_PREP(G0_IRESO_IW, fb->width - 1) |
+		 FIELD_PREP(G0_IRESO_IH, fb->height - 1));
+
+	/* source position 0,0 and 1:1 placement on the display */
+	vo_write(vdp, G0_DFPOS, 0);
+	vo_write(vdp, G0_DLPOS,
+		 FIELD_PREP(G0_DLPOS_X, fb->width - 1) |
+		 FIELD_PREP(G0_DLPOS_Y, fb->height - 1));
+	vo_write(vdp, G0_VFPOS, 0);
+	vo_write(vdp, G0_VLPOS,
+		 FIELD_PREP(G0_DLPOS_X, fb->width - 1) |
+		 FIELD_PREP(G0_DLPOS_Y, fb->height - 1));
+
+	/*
+	 * GP0 passes the G0 surface through: same resolution, full-screen
+	 * display window (DFPOS 0,0 / DLPOS (w-1, h-1), 12-bit x[11:0] y[23:12]
+	 * fields).
+	 */
+	vo_write(vdp, GP0_IRESO,
+		 FIELD_PREP(G0_IRESO_IW, fb->width - 1) |
+		 FIELD_PREP(G0_IRESO_IH, fb->height - 1));
+	vo_write(vdp, GP0_ORESO,
+		 FIELD_PREP(GP0_ORESO_OW, fb->width - 1) |
+		 FIELD_PREP(GP0_ORESO_OH, fb->height - 1));
+	vo_write(vdp, GP0_DFPOS, 0);
+	vo_write(vdp, GP0_DLPOS,
+		 FIELD_PREP(G0_DLPOS_X, fb->width - 1) |
+		 FIELD_PREP(G0_DLPOS_Y, fb->height - 1));
+	vo_write(vdp, GP0_VFPOS, 0);
+	vo_write(vdp, GP0_VLPOS,
+		 FIELD_PREP(G0_DLPOS_X, fb->width - 1) |
+		 FIELD_PREP(G0_DLPOS_Y, fb->height - 1));
+
+	/*
+	 * The zoom engine walks the source with its own step registers, so
+	 * GP0_IRESO == GP0_ORESO does not mean 1:1: left alone, the engine
+	 * keeps scaling by whatever was programmed for the previous user of the
+	 * block, which can make the output cover the screen more than once. The
+	 * formula is ratio = in * precision / out, with a horizontal precision
+	 * of 1<<20 and a vertical one of 1<<12.
+	 */
+	ctrl = vo_read(vdp, GP0_ZME_HSP);
+	ctrl = (ctrl & ~GP0_ZME_HSP_RATIO) |
+	       FIELD_PREP(GP0_ZME_HSP_RATIO, GP0_ZME_HPREC);
+	vo_write(vdp, GP0_ZME_HSP, ctrl);
+
+	ctrl = vo_read(vdp, GP0_ZME_VSR);
+	ctrl = (ctrl & ~GP0_ZME_VSR_RATIO) |
+	       FIELD_PREP(GP0_ZME_VSR_RATIO, GP0_ZME_VPREC);
+	vo_write(vdp, GP0_ZME_VSR, ctrl);
+
+	/* scaler phase starts at the first source pixel */
+	vo_write(vdp, GP0_ZME_HLOFFSET, 0);
+	vo_write(vdp, GP0_ZME_HCOFFSET, 0);
+	vo_write(vdp, GP0_ZME_VOFFSET, 0);
+	vo_write(vdp, GP0_UPD, GP0_UPD_REGUP);
+
+	/* layer enable + shadow-register update */
+	ctrl = vo_read(vdp, G0_CTRL);
+	ctrl |= G0_CTRL_SURFACE_EN;
+	vo_write(vdp, G0_CTRL, ctrl);
+	vo_write(vdp, G0_UPD, G0_UPD_REGUP);
+}
+
+static void histb_vdp2_plane_atomic_update(struct drm_plane *plane,
+					 struct drm_atomic_commit *state)
+{
+	struct histb_vdp2 *vdp = plane_to_vdp(plane);
+	struct drm_plane_state *new_state = drm_atomic_get_new_plane_state(state, plane);
+	struct drm_gem_dma_object *gem;
+	struct drm_framebuffer *fb = new_state->fb;
+
+	if (!fb)
+		return;
+
+	gem = drm_fb_dma_get_gem_obj(fb, 0);
+	if (!gem)
+		return;
+
+	histb_vdp2_g0_set(vdp, fb, gem, new_state->visible);
+}
+
+static void histb_vdp2_plane_atomic_disable(struct drm_plane *plane,
+					  struct drm_atomic_commit *state)
+{
+	struct histb_vdp2 *vdp = plane_to_vdp(plane);
+
+	histb_vdp2_g0_set(vdp, NULL, NULL, false);
+}
+
+static int histb_vdp2_plane_atomic_check(struct drm_plane *plane,
+				       struct drm_atomic_commit *state)
+{
+	struct drm_plane_state *new_state =
+		drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc_state *crtc_state;
+
+	if (!new_state->fb)
+		return 0;
+
+	/* G0_STRIDE is programmed in units of 16 bytes */
+	if (new_state->fb->pitches[0] % 16)
+		return -EINVAL;
+
+	/* the G0_IRESO / GP0_ORESO width fields are 12 bits wide */
+	if (new_state->fb->width > 4095)
+		return -EINVAL;
+
+	if (!new_state->crtc)
+		return 0;
+
+	crtc_state = drm_atomic_get_new_crtc_state(state, new_state->crtc);
+	if (IS_ERR(crtc_state))
+		return PTR_ERR(crtc_state);
+
+	if (new_state->crtc_w > 4095 || new_state->crtc_h > 4095)
+		return -EINVAL;
+
+	/*
+	 * This is what fills in new_state->visible, and atomic_update acts on
+	 * it: without the helper visible stays false, so every plane commit
+	 * switches the surface off again. can_position is false because the
+	 * driver always places the surface at 0,0 with the framebuffer's own
+	 * size.
+	 */
+	return drm_atomic_helper_check_plane_state(new_state, crtc_state,
+						   DRM_PLANE_NO_SCALING,
+						   DRM_PLANE_NO_SCALING,
+						   false, true);
+}
+
+static const struct drm_plane_helper_funcs histb_vdp2_plane_helper_funcs = {
+	/*
+	 * No DRM_GEM_SHADOW_PLANE_HELPER_FUNCS here: they upcast the state with
+	 * container_of() to struct drm_shadow_plane_state, which only the
+	 * matching DRM_GEM_SHADOW_PLANE_FUNCS duplicate() allocates.
+	 */
+	.atomic_check		= histb_vdp2_plane_atomic_check,
+	.atomic_update		= histb_vdp2_plane_atomic_update,
+	.atomic_disable		= histb_vdp2_plane_atomic_disable,
+};
+
+static const struct drm_plane_funcs histb_vdp2_plane_funcs = {
+	.update_plane		= drm_atomic_helper_update_plane,
+	.disable_plane		= drm_atomic_helper_disable_plane,
+	.destroy		= drm_plane_cleanup,
+	.reset			= drm_atomic_helper_plane_reset,
+	.atomic_duplicate_state	= drm_atomic_helper_plane_duplicate_state,
+	.atomic_destroy_state	= drm_atomic_helper_plane_destroy_state,
+};
+
+/* ------------------------------------------------------------------ */
+/* CRTC (DHD0 channel)                                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * One-time display pipeline setup: route GP0 into the DHD0 mixer, set the AXI
+ * outstanding limits and enable the block's clock gate.
+ */
+static void histb_vdp2_pipeline_init(struct histb_vdp2 *vdp)
+{
+	unsigned int i;
+	u32 ctrl;
+
+	/*
+	 * Open the clock gate FIRST: every write issued while vo_ck_gt_en is
+	 * clear can be dropped by the gated clock domain, which leaves the AXI
+	 * side without its outstanding limits and the composition sampling
+	 * black.
+	 */
+	ctrl = vo_read(vdp, VO_CTRL);
+	ctrl |= VO_CTRL_CK_GT_EN;
+	vo_write(vdp, VO_CTRL, ctrl);
+
+	/* AXI outstanding limits: read bus 0/1 = 7, write = 4. */
+	ctrl = vo_read(vdp, VOAXICTRL);
+	ctrl &= ~(VO_AXI_M0_RD0_OSTD | VO_AXI_M0_RD1_OSTD | VO_AXI_M0_WR_OSTD);
+	ctrl |= FIELD_PREP(VO_AXI_M0_RD0_OSTD, 7) |
+		FIELD_PREP(VO_AXI_M0_RD1_OSTD, 7) |
+		FIELD_PREP(VO_AXI_M0_WR_OSTD, 4);
+	vo_write(vdp, VOAXICTRL, ctrl);
+
+	/*
+	 * CBM_ATTR routes each surface to one of the two mixers; the surfaces
+	 * of the display channel use sur_attr2|sur_attr3, so 0xc.
+	 */
+	vo_write(vdp, CBM_ATTR, CBM_ATTR_SUR2 | CBM_ATTR_SUR3);
+
+	/*
+	 * Mixer background (Cr[9:0] Cb[19:10] Y[29:20]). Left at its reset 0
+	 * the uncovered area is YCbCr(0,0,0), which panels render as solid
+	 * green; Y=64 with both chroma at mid-scale is black.
+	 */
+	vo_write(vdp, CBM_BKG1, CBM_BKG_BLACK);
+
+	/*
+	 * Firmware can leave its own logo layers enabled, and they sit at a
+	 * higher mixer priority than ours, so turn off every graphics layer
+	 * except the one the plane drives.
+	 */
+	for (i = 0; i < 5; i++) {
+		u32 off = G0_CTRL + i * GFX_LAYER_STRIDE;
+
+		if (off == G0_CTRL)
+			continue;
+		ctrl = vo_read(vdp, off);
+		if (!(ctrl & G0_CTRL_SURFACE_EN))
+			continue;
+		vo_write(vdp, off, ctrl & ~G0_CTRL_SURFACE_EN);
+		vo_write(vdp, off + (G0_UPD - G0_CTRL), G0_UPD_REGUP);
+	}
+
+	/*
+	 * Two mixers sit between the surfaces and the channel: MIXG0 takes the
+	 * graphics layers, CBM_MIX1 is DHD0's. Both hold layer_id + 1 per
+	 * priority slot and 0 for no slot, so G0 goes to MIXG0 slot 0 and GP0
+	 * to DHD0's slot 1 (0x21 in each).
+	 */
+	vo_write(vdp, MIXG0_MIX,
+		 FIELD_PREP(MIX_PRIO0, MIXG0_LAYER_G0) |
+		 FIELD_PREP(MIX_PRIO1, MIXG0_LAYER_G1));
+	vo_write(vdp, CBM_MIX1,
+		 FIELD_PREP(MIX_PRIO0, CBM_LAYER_VP0) |
+		 FIELD_PREP(MIX_PRIO1, CBM_LAYER_GP0));
+
+	/*
+	 * GP0 sits between the G0 fetch and the mixer (DHD0's table admits
+	 * prio0 = VP0, prio1 = GP0), so the surface has to transit a post block
+	 * before the mixer sees it. Which stages that output taps is one of the
+	 * three whole-register values of GP0_CTRL; the working combination is
+	 * GP0_ORDER_ZME_CSC with read_mode set, and the scaling step registers
+	 * are programmed for 1:1 by histb_vdp2_g0_set().
+	 */
+	vo_write(vdp, GP0_CTRL, GP0_ORDER_ZME_CSC | GP0_CTRL_READ_MODE);
+	vo_write(vdp, GP0_GALPHA, 0xff);
+	/*
+	 * GP0's CSC stage stays bypassed: the interface carries RGB (see
+	 * histb_vdp2_crtc_setup_timing()), so converting to YCbCr here would
+	 * make the transmitter colour-convert its own input. csc_en clears with
+	 * the stage still in the order.
+	 */
+	vo_write(vdp, GP0_CSC_IDC, 0);
+
+	vo_write(vdp, GP0_UPD, GP0_UPD_REGUP);
+}
+
+static void histb_vdp2_crtc_setup_timing(struct histb_vdp2 *vdp,
+				       const struct drm_display_mode *mode)
+{
+	/*
+	 * The DHD totals are ACT + BB + FB -- the sync pulse lives inside the
+	 * back porch, and HPW/VPW only say how wide it is there; programming a
+	 * bare back porch leaves the transmitter counting too few lines.
+	 */
+	u32 hbb = mode->hsync_end - mode->hsync_start +	/* sync width */
+		  mode->htotal - mode->hsync_end;	/* back porch */
+	u32 hfb = mode->hsync_start - mode->hdisplay;	/* front porch */
+	u32 hpw = mode->hsync_end - mode->hsync_start;	/* sync width */
+	u32 vbb = mode->vsync_end - mode->vsync_start +
+		  mode->vtotal - mode->vsync_end;
+	u32 vfb = mode->vsync_start - mode->vdisplay;
+	u32 vpw = mode->vsync_end - mode->vsync_start;
+	bool interlaced = mode->flags & DRM_MODE_FLAG_INTERLACE;
+	/*
+	 * In an interlaced mode the channel emits one field at a time, so the
+	 * vertical counters are per field. 1080i60 is (Vact 540, Vbb 20, Vfb 2)
+	 * for the top field and (540, 21, 2) for the bottom one, which sums to
+	 * the 1125-line frame.
+	 */
+	u32 vact = interlaced ? mode->vdisplay / 2 : mode->vdisplay;
+	u32 tvbb = interlaced ? vbb / 2 : vbb;
+	u32 tvfb = interlaced ? vfb / 2 : vfb;
+	u32 bvbb = vbb - tvbb;
+	/*
+	 * HMID is where the second field starts inside the line, half a frame
+	 * line in: 908 for 1080i60 and 1128 for 1080i50.
+	 */
+	u32 hmid = interlaced ? mode->htotal / 2 - hbb : 0;
+	u32 vtthd, ctrl, inv = 0;
+
+	ctrl = vo_read(vdp, DHD0_CTRL);
+	if (interlaced)
+		ctrl &= ~DHD_CTRL_IOP;		/* field sequential */
+	else
+		ctrl |= DHD_CTRL_IOP;		/* progressive */
+	/*
+	 * hdmi_mode (bit14) and DATA_SEL.hdmi_data_sel are one decision: both
+	 * carry the interface data type, 1 meaning RGB on the HDMI pins and 0
+	 * YCbCr.
+	 *
+	 * RGB is used for every format here. Passing YCbCr straight through
+	 * also needs the output-stage lane mux (video1_sel / video2_sel /
+	 * video3_sel / src_ctrl) reprogrammed to match; with the mux left at
+	 * its reset values the two chroma lanes arrive exchanged and Cb carries
+	 * nothing, so only the luma path is right. Nothing on the RGB path
+	 * needs those selects.
+	 */
+	ctrl |= DHD_CTRL_HDMI_MODE;
+	/*
+	 * bit15 is reserved in the mv100 layout, but a channel that drives a
+	 * panel has it set, so set it.
+	 */
+	ctrl |= DHD_CTRL_INTFB;
+	ctrl |= DHD_CTRL_INTF_EN;		/* drive the HDMI interface */
+	vo_write(vdp, DHD0_CTRL, ctrl);
+
+	/* horizontal: registers take value - 1 */
+	vo_write(vdp, DHD0_HSYNC1,
+		 FIELD_PREP(DHD_HSYNC1_HACT, histb_vdp2_m1(mode->hdisplay)) |
+		 FIELD_PREP(DHD_HSYNC1_HBB, histb_vdp2_m1(hbb)));
+	vo_write(vdp, DHD0_HSYNC2,
+		 FIELD_PREP(DHD_HSYNC2_HFB, histb_vdp2_m1(hfb)) |
+		 FIELD_PREP(DHD_HSYNC2_HMID, hmid ? hmid - 1 : 0));
+	vo_write(vdp, DHD0_PWR,
+		 FIELD_PREP(DHD_PWR_HPW, histb_vdp2_m1(hpw)) |
+		 FIELD_PREP(DHD_PWR_VPW, histb_vdp2_m1(vpw)));
+
+	/* vertical: top field in VSYNC, bottom field in VPLUS; for progressive
+	 * modes the bottom values mirror the top ones.
+	 */
+	vo_write(vdp, DHD0_VSYNC,
+		 FIELD_PREP(DHD_VSYNC_VACT, histb_vdp2_m1(vact)) |
+		 FIELD_PREP(DHD_VSYNC_VBB, histb_vdp2_m1(tvbb)) |
+		 FIELD_PREP(DHD_VSYNC_VFB, histb_vdp2_m1(tvfb)));
+	vo_write(vdp, DHD0_VPLUS,
+		 FIELD_PREP(DHD_VPLUS_BVACT, histb_vdp2_m1(vact)) |
+		 FIELD_PREP(DHD_VPLUS_BVBB, histb_vdp2_m1(bvbb)) |
+		 FIELD_PREP(DHD_VPLUS_BVFB, histb_vdp2_m1(tvfb)));
+
+	/* vblank interrupt threshold: 8/10 of the frame; frame based mode. */
+	vtthd = (tvbb + vact + tvfb) * 8 / 10;
+	vo_write(vdp, DHD0_VTTHD,
+		 FIELD_PREP(DHD_VTTHD1, vtthd) | DHD_VTTHD1_MODE);
+
+	/*
+	 * sync polarity towards the HDMI transmitter: the *_INV bits invert the
+	 * corresponding sync; non-inverted output equals DRM positive sync.
+	 */
+	if (mode->flags & DRM_MODE_FLAG_NHSYNC)
+		inv |= DHD_SYNC_HDMI_HS_INV;
+	if (mode->flags & DRM_MODE_FLAG_NVSYNC)
+		inv |= DHD_SYNC_HDMI_VS_INV;
+	vo_write(vdp, DHD0_SYNC_INV, inv);
+
+	/*
+	 * Set our bit of the interface data type and leave the rest as the
+	 * reset state has it: bit 3 is hdmi_data_sel, bit 1 is vga_data_sel and
+	 * bit 2 is reserved on mv100, so this has to be a read-modify-write.
+	 * hdmi_mode above carries the same decision.
+	 */
+	ctrl = vo_read(vdp, DHD0_DATA_SEL);
+	ctrl |= DHD_DATA_SEL_HDMI;
+	vo_write(vdp, DHD0_DATA_SEL, ctrl);
+
+	/* latch the timing registers */
+	ctrl = vo_read(vdp, DHD0_CTRL);
+	ctrl |= DHD_CTRL_REGUP;
+	vo_write(vdp, DHD0_CTRL, ctrl);
+
+	/*
+	 * The DSD channel (0xc400..) is left alone: the HDMI interface is
+	 * driven from DHD0, and enabling it on channel 1 would only re-route a
+	 * timing this port does not build.
+	 */
+}
+
+static enum drm_mode_status histb_vdp2_crtc_mode_valid(struct drm_crtc *crtc,
+						     const struct drm_display_mode *mode)
+{
+	struct histb_vdp2 *vdp = crtc_to_vdp(crtc);
+	long rate;
+
+	/* G0/GP0 position and resolution fields are 12 bits wide */
+	if (mode->hdisplay > 4095 || mode->vdisplay > 4095)
+		return MODE_BAD;
+
+	/* 3840x2160 is the largest mode the pipeline reaches */
+	if (mode->hdisplay > 3840 || mode->vdisplay > 2160)
+		return MODE_BAD;
+
+	if (mode->hdisplay % 2 || mode->vdisplay % 2)
+		return MODE_BAD;
+
+	/* the HD PLL and channel divider can only produce certain rates */
+	rate = clk_round_rate(vdp->clk_pix, mode->clock * 1000);
+	if (rate < 0)
+		return MODE_ERROR;
+
+	/*
+	 * The clock can only produce the rates its own table holds, which are
+	 * what each format's timing adds up to -- a few hundred Hz away from
+	 * the nominal clock the EDID rounds into mode->clock. Allow half a
+	 * percent; keep the arithmetic in Hz so a large mismatch cannot
+	 * overflow and look like a pass.
+	 */
+	if (abs(rate - (long)mode->clock * 1000) > (long)mode->clock * 5)
+		return MODE_NOCLOCK;
+
+	return MODE_OK;
+}
+
+static void histb_vdp2_crtc_atomic_enable(struct drm_crtc *crtc,
+					struct drm_atomic_commit *state)
+{
+	struct histb_vdp2 *vdp = crtc_to_vdp(crtc);
+	struct drm_crtc_state *new_state = drm_atomic_get_new_crtc_state(state, crtc);
+	const struct drm_display_mode *mode = &new_state->adjusted_mode;
+	struct drm_plane_state *pstate;
+	struct drm_gem_dma_object *gem;
+	struct drm_framebuffer *fb;
+	u32 ctrl;
+
+	/* the channel clock is what the HDMI transmitter receives, too */
+	histb_vdp2_set_pixclk(vdp, mode->clock);
+
+	histb_vdp2_pipeline_init(vdp);
+
+	histb_vdp2_crtc_setup_timing(vdp, mode);
+
+	/* enable the channel */
+	ctrl = vo_read(vdp, DHD0_CTRL);
+	ctrl |= DHD_CTRL_INTF_EN | DHD_CTRL_REGUP;
+	vo_write(vdp, DHD0_CTRL, ctrl);
+
+	/*
+	 * commit_planes runs before modeset_enables, and G0 drops register
+	 * writes while the VDP pipeline is not up (the block then reads back
+	 * its reset values), so (re)program the layer from the fb the commit
+	 * just installed.
+	 */
+	pstate = drm_atomic_get_new_plane_state(state, crtc->primary);
+	if (!pstate)
+		pstate = crtc->primary->state;
+	fb = pstate->fb;
+	if (fb) {
+		gem = drm_fb_dma_get_gem_obj(fb, 0);
+		if (gem)
+			histb_vdp2_g0_set(vdp, fb, gem, pstate->visible);
+	}
+
+	drm_crtc_vblank_on(crtc);
+}
+
+static void histb_vdp2_crtc_atomic_disable(struct drm_crtc *crtc,
+					 struct drm_atomic_commit *state)
+{
+	struct histb_vdp2 *vdp = crtc_to_vdp(crtc);
+	u32 ctrl;
+
+	drm_crtc_vblank_off(crtc);
+
+	ctrl = vo_read(vdp, DHD0_CTRL);
+	ctrl &= ~DHD_CTRL_INTF_EN;
+	ctrl |= DHD_CTRL_REGUP;
+	vo_write(vdp, DHD0_CTRL, ctrl);
+}
+
+static int histb_vdp2_crtc_enable_vblank(struct drm_crtc *crtc)
+{
+	struct histb_vdp2 *vdp = crtc_to_vdp(crtc);
+
+	if (vdp->irq < 0)
+		return -EOPNOTSUPP;
+
+	/* unmask the DHD0 threshold-1 interrupt */
+	vo_write(vdp, VO_INTMSK,
+		 vo_read(vdp, VO_INTMSK) & ~VO_INT_DHD0_VTTHD1);
+	return 0;
+}
+
+static void histb_vdp2_crtc_disable_vblank(struct drm_crtc *crtc)
+{
+	struct histb_vdp2 *vdp = crtc_to_vdp(crtc);
+
+	if (vdp->irq < 0)
+		return;
+
+	vo_write(vdp, VO_INTMSK,
+		 vo_read(vdp, VO_INTMSK) | VO_INT_DHD0_VTTHD1);
+}
+
+static void histb_vdp2_crtc_atomic_flush(struct drm_crtc *crtc,
+				       struct drm_atomic_commit *state)
+{
+	struct drm_crtc_state *new_state = drm_atomic_get_new_crtc_state(state, crtc);
+
+	/*
+	 * The VDP latches the whole frame at once and the vblank IRQ only marks
+	 * the count, so send the flip event right after the commit.
+	 */
+	if (new_state->event) {
+		spin_lock_irq(&crtc->dev->event_lock);
+		drm_crtc_send_vblank_event(crtc, new_state->event);
+		new_state->event = NULL;	/* consumed: keep hw_done quiet */
+		spin_unlock_irq(&crtc->dev->event_lock);
+	}
+}
+
+static const struct drm_crtc_helper_funcs histb_vdp2_crtc_helper_funcs = {
+	.mode_valid		= histb_vdp2_crtc_mode_valid,
+	.atomic_enable		= histb_vdp2_crtc_atomic_enable,
+	.atomic_disable		= histb_vdp2_crtc_atomic_disable,
+	.atomic_flush		= histb_vdp2_crtc_atomic_flush,
+};
+
+static const struct drm_crtc_funcs histb_vdp2_crtc_funcs = {
+	.set_config		= drm_atomic_helper_set_config,
+	.page_flip		= drm_atomic_helper_page_flip,
+	.destroy		= drm_crtc_cleanup,
+	.reset			= drm_atomic_helper_crtc_reset,
+	.atomic_duplicate_state	= drm_atomic_helper_crtc_duplicate_state,
+	.atomic_destroy_state	= drm_atomic_helper_crtc_destroy_state,
+	.enable_vblank		= histb_vdp2_crtc_enable_vblank,
+	.disable_vblank		= histb_vdp2_crtc_disable_vblank,
+};
+
+static irqreturn_t histb_vdp2_irq_handler(int irq, void *data)
+{
+	struct histb_vdp2 *vdp = data;
+	struct histb_vdp2_display *disp = READ_ONCE(vdp->disp);
+	u32 all = vo_read(vdp, VO_INTSTA);
+	u32 sta = all & ~vo_read(vdp, VO_INTMSK);
+
+	if (!all)
+		return IRQ_NONE;
+
+	/*
+	 * Ack every latched source, not just the vblank one: returning IRQ_NONE
+	 * while a VDP status bit stays set makes the core disable the line
+	 * ("nobody cared") and vblank dies with it. Sources the driver masks
+	 * off still latch, so dispatch on the unmasked subset only -- otherwise
+	 * the frame-threshold bits that nobody enables print a warning once per
+	 * vblank.
+	 */
+	vo_write(vdp, VO_MSKINTSTA, all);
+
+	if (sta & ~VO_INT_DHD0_VTTHD1)
+		dev_warn_ratelimited(vdp->dev, "vdp irq: unexpected status %08x\n",
+				     sta);
+
+	/* the line stays requested across an aggregate unbind, no CRTC then */
+	if (disp && (sta & VO_INT_DHD0_VTTHD1))
+		drm_crtc_handle_vblank(&disp->crtc);
+	return IRQ_HANDLED;
+}
+
+/* ------------------------------------------------------------------ */
+/* Mode config / binding                                               */
+/* ------------------------------------------------------------------ */
+
+static const struct drm_mode_config_funcs histb_vdp2_mode_config_funcs = {
+	.fb_create		= drm_gem_fb_create,
+	.atomic_check		= drm_atomic_helper_check,
+	.atomic_commit		= drm_atomic_helper_commit,
+};
+
+static const struct drm_encoder_funcs histb_vdp2_encoder_funcs = {
+	.destroy		= drm_encoder_cleanup,
+};
+
+static const struct drm_encoder_helper_funcs histb_vdp2_encoder_helper_funcs = {
+};
+
+DEFINE_DRM_GEM_DMA_FOPS(histb_vdp2_fops);
+
+static const struct drm_driver histb_vdp2_driver = {
+	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
+	.fops			= &histb_vdp2_fops,
+	DRM_GEM_DMA_DRIVER_OPS,
+	DRM_FBDEV_DMA_DRIVER_OPS,
+	.name			= "histb-vdp2",
+	.desc			= "HiSTB VDP v2 display engine",
+	.major			= 1,
+	.minor			= 0,
+};
+
+static int histb_vdp2_bind(struct device *dev)
+{
+	struct histb_vdp2 *vdp = dev_get_drvdata(dev);
+	struct histb_vdp2_display *disp;
+	struct drm_device *drm;
+	struct drm_bridge *bridge;
+	struct drm_connector *connector;
+	int ret;
+
+	ret = component_bind_all(dev, NULL);
+	if (ret)
+		return dev_err_probe(dev, ret, "component_bind_all failed\n");
+
+	/*
+	 * Only the devm variant of this lookup exists, so each rebind adds a
+	 * bridge reference tied to this device rather than to the aggregate.
+	 * They are all dropped when the device goes away; the transmitter
+	 * outlives the aggregate by construction (it is a component of it).
+	 */
+	bridge = devm_drm_of_get_bridge(dev, dev->of_node, 0, 0);
+	if (IS_ERR(bridge)) {
+		ret = PTR_ERR(bridge);
+		dev_err_probe(dev, ret, "failed to find downstream HDMI bridge\n");
+		goto err_unbind;
+	}
+
+	drm = drm_dev_alloc(&histb_vdp2_driver, dev);
+	if (IS_ERR(drm)) {
+		ret = PTR_ERR(drm);
+		dev_err_probe(dev, ret, "drm_dev_alloc failed\n");
+		goto err_unbind;
+	}
+
+	disp = drmm_kzalloc(drm, sizeof(*disp), GFP_KERNEL);
+	if (!disp) {
+		ret = -ENOMEM;
+		goto err_put;
+	}
+	disp->vdp = vdp;
+	disp->drm = drm;
+	drm->dev_private = disp;
+	WRITE_ONCE(vdp->disp, disp);
+
+	ret = drmm_mode_config_init(drm);
+	if (ret) {
+		dev_err_probe(dev, ret, "mode_config_init failed\n");
+		goto err_put;
+	}
+
+	drm->mode_config.min_width	= 64;
+	drm->mode_config.max_width	= 3840;
+	drm->mode_config.min_height	= 64;
+	drm->mode_config.max_height	= 2160;
+	drm->mode_config.funcs		= &histb_vdp2_mode_config_funcs;
+
+	/* one CRTC, so the vblank core must exist before the IRQ can be served
+	 * and before any atomic commit waits on it
+	 */
+	ret = drm_vblank_init(drm, 1);
+	if (ret) {
+		dev_err_probe(dev, ret, "vblank_init failed\n");
+		goto err_put;
+	}
+
+	ret = drm_universal_plane_init(drm, &disp->primary, 0,
+				       &histb_vdp2_plane_funcs,
+				       histb_vdp2_formats,
+				       ARRAY_SIZE(histb_vdp2_formats),
+				       NULL, DRM_PLANE_TYPE_PRIMARY, NULL);
+	if (ret) {
+		dev_err_probe(dev, ret, "plane_init failed\n");
+		goto err_put;
+	}
+	drm_plane_helper_add(&disp->primary, &histb_vdp2_plane_helper_funcs);
+
+	ret = drm_crtc_init_with_planes(drm, &disp->crtc, &disp->primary, NULL,
+					&histb_vdp2_crtc_funcs, "histb-vdp2-crtc");
+	if (ret) {
+		dev_err_probe(dev, ret, "crtc_init failed\n");
+		goto err_put;
+	}
+	drm_crtc_helper_add(&disp->crtc, &histb_vdp2_crtc_helper_funcs);
+	drm_crtc_vblank_reset(&disp->crtc);
+
+	disp->encoder.possible_crtcs = drm_crtc_mask(&disp->crtc);
+	ret = drm_encoder_init(drm, &disp->encoder, &histb_vdp2_encoder_funcs,
+			       DRM_MODE_ENCODER_TMDS, "histb-vdp2-encoder");
+	if (ret) {
+		dev_err_probe(dev, ret, "encoder_init failed\n");
+		goto err_put;
+	}
+	drm_encoder_helper_add(&disp->encoder, &histb_vdp2_encoder_helper_funcs);
+
+	ret = drm_bridge_attach(&disp->encoder, bridge, NULL,
+				DRM_BRIDGE_ATTACH_NO_CONNECTOR);
+	if (ret) {
+		dev_err_probe(dev, ret, "bridge_attach failed\n");
+		goto err_put;
+	}
+
+	connector = drm_bridge_connector_init(drm, &disp->encoder);
+	if (IS_ERR(connector)) {
+		dev_err_probe(dev, PTR_ERR(connector),
+			      "failed to init bridge connector\n");
+		goto err_put;
+	}
+	drm_connector_attach_encoder(connector, &disp->encoder);
+
+	/*
+	 * The transmitter has no usable HPD output (it is a level signal that
+	 * storms while a sink is attached), so the connector the bridge
+	 * helper created asks for DRM_CONNECTOR_POLL_CONNECT|DISCONNECT.
+	 * Without starting the poll work here nothing would ever re-detect a
+	 * plug event. The drmm variant stops with the DRM device.
+	 */
+	drmm_kms_helper_poll_init(drm);
+
+	drm_mode_config_reset(drm);
+
+	ret = drm_dev_register(drm, 0);
+	if (ret) {
+		dev_err_probe(dev, ret, "drm_dev_register failed\n");
+		goto err_put;
+	}
+
+	drm_client_setup(drm, NULL);
+
+	return 0;
+
+err_put:
+	WRITE_ONCE(vdp->disp, NULL);
+	drm_dev_put(drm);
+err_unbind:
+	component_unbind_all(dev, NULL);
+	return ret;
+}
+
+static void histb_vdp2_unbind(struct device *dev)
+{
+	struct histb_vdp2 *vdp = dev_get_drvdata(dev);
+	struct histb_vdp2_display *disp = vdp->disp;
+	struct drm_device *drm = disp->drm;
+
+	/* drm_dev_unplug() also unregisters; tear down while clocks are on */
+	drm_dev_unplug(drm);
+	drm_atomic_helper_shutdown(drm);
+
+	WRITE_ONCE(vdp->disp, NULL);
+	component_unbind_all(dev, NULL);
+	drm_dev_put(drm);
+}
+
+/*
+ * Who belongs to this pipeline is read out of the device tree, not out of the
+ * order someone happens to echo into unbind: the transmitter on the far side of
+ * our own graph endpoint is added as a component of this aggregate, so removing
+ * its driver takes the DRM device down before that driver's bridge, regmaps and
+ * MMIO are released. Without it, unbinding the transmitter under a live card
+ * lets the atomic paths dereference the freed bridge.
+ */
+static const struct component_master_ops histb_vdp2_master_ops = {
+	.bind		= histb_vdp2_bind,
+	.unbind		= histb_vdp2_unbind,
+};
+
+static int histb_vdp2_add_master(struct device *dev)
+{
+	struct component_match *match = NULL;
+	struct device_node *endpoint;
+
+	for_each_endpoint_of_node(dev->of_node, endpoint) {
+		struct device_node *remote =
+			of_graph_get_remote_port_parent(endpoint);
+
+		if (remote && of_device_is_available(remote))
+			drm_of_component_match_add(dev, &match,
+						   component_compare_of, remote);
+		of_node_put(remote);
+	}
+
+	return component_master_add_with_match(dev, &histb_vdp2_master_ops, match);
+}
+
+/*
+ * The VOU reset request is CRG54[30]. A reset only reaches the block while it
+ * is clocked, so the gates come up first: CRG54's own gate group is the clock
+ * "vo" and the HD channel clock is "pix", both enabled by
+ * histb_vdp2_runtime_resume(). The reset has to be held before it is released
+ * and the block needs settling time afterwards, so the pulse comes with delays.
+ */
+static void histb_vdp2_hw_reset(struct histb_vdp2 *vdp)
+{
+	/*
+	 * DHD0_CTRL is the readback that says the pulse landed: whoever used
+	 * the display before us normally leaves the HD channel enabled, and a
+	 * VOU reset clears it back to the default. Both reads happen outside
+	 * the hold window, since a block in reset need not answer.
+	 */
+	dev_dbg(vdp->dev, "before reset: DHD0_CTRL %08x\n", vo_read(vdp, DHD0_CTRL));
+
+	reset_control_assert(vdp->rst);
+	usleep_range(5000, 5200);
+	reset_control_deassert(vdp->rst);
+	usleep_range(1000, 1200);
+
+	dev_dbg(vdp->dev, "after reset: DHD0_CTRL %08x\n", vo_read(vdp, DHD0_CTRL));
+}
+
+static int histb_vdp2_runtime_suspend(struct device *dev)
+{
+	struct histb_vdp2 *vdp = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(vdp->clk_vo);
+	clk_disable_unprepare(vdp->clk_pix);
+	return 0;
+}
+
+static int histb_vdp2_runtime_resume(struct device *dev)
+{
+	struct histb_vdp2 *vdp = dev_get_drvdata(dev);
+	int ret;
+
+	ret = clk_prepare_enable(vdp->clk_pix);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(vdp->clk_vo);
+	if (ret) {
+		clk_disable_unprepare(vdp->clk_pix);
+		return ret;
+	}
+
+	histb_vdp2_hw_reset(vdp);
+
+	return 0;
+}
+
+static const struct dev_pm_ops histb_vdp2_pm_ops = {
+	RUNTIME_PM_OPS(histb_vdp2_runtime_suspend, histb_vdp2_runtime_resume, NULL)
+};
+
+static int histb_vdp2_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct histb_vdp2 *vdp;
+	int ret;
+
+	vdp = devm_kzalloc(dev, sizeof(*vdp), GFP_KERNEL);
+	if (!vdp)
+		return -ENOMEM;
+
+	vdp->dev = dev;
+	platform_set_drvdata(pdev, vdp);
+
+	vdp->regs = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(vdp->regs))
+		return dev_err_probe(dev, PTR_ERR(vdp->regs), "ioremap failed\n");
+
+	/*
+	 * The HD channel clock, which the CRG driver builds from the HD PLL and
+	 * CRG54 (see histb_vdp2_set_pixclk()), and CRG54's gate group for the
+	 * rest of the channel path; the VOU reset only shifts while both of
+	 * them run.
+	 */
+	vdp->clk_pix = devm_clk_get(dev, "pix");
+	if (IS_ERR(vdp->clk_pix))
+		return dev_err_probe(dev, PTR_ERR(vdp->clk_pix), "clk pix\n");
+
+	vdp->clk_vo = devm_clk_get(dev, "vo");
+	if (IS_ERR(vdp->clk_vo))
+		return dev_err_probe(dev, PTR_ERR(vdp->clk_vo), "clk vo\n");
+
+	vdp->rst = devm_reset_control_get_exclusive(dev, NULL);
+	if (IS_ERR(vdp->rst))
+		return dev_err_probe(dev, PTR_ERR(vdp->rst), "rst\n");
+
+	/*
+	 * Power the block up before anything reads or writes a VDP register:
+	 * histb_vdp2_runtime_resume() enables the channel clock and takes the
+	 * VOU through a reset of our own, so the register file starts from its
+	 * documented defaults instead of from the state it was handed over in.
+	 * The device then stays permanently powered for the whole probe/remove
+	 * lifetime: the atomic paths and the vblank IRQ touch registers with no
+	 * pm_runtime references of their own, and the shared pixel clock makes
+	 * idle power-down of little use anyway. histb_vdp2_remove() drops the
+	 * reference again; an aggregate unbind leaves the clocks up because the
+	 * transmitter may bind again.
+	 */
+	pm_runtime_enable(dev);
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret) {
+		dev_err_probe(dev, ret, "pm_runtime_resume failed\n");
+		goto err_pm_disable;
+	}
+
+	ret = dma_set_coherent_mask(dev, DMA_BIT_MASK(32));
+	if (ret) {
+		dev_err_probe(dev, ret, "dma_mask failed\n");
+		goto err_pm_put;
+	}
+
+	/*
+	 * Frame buffers have to be physically contiguous: this channel takes
+	 * one base address (VO_G0_ADDR), and the chip has no MMU on the display
+	 * side, so an imported buffer is refused unless its scatter/gather
+	 * table covers the whole object. Bind the pool named by the
+	 * "memory-region" property, which keeps them out of the default CMA
+	 * area the decoder queues allocate from. A board whose DTB has no such
+	 * property is not an error (-ENODEV): the device then keeps using the
+	 * default pool.
+	 */
+	ret = devm_of_reserved_mem_device_init(dev);
+	if (ret && ret != -ENODEV) {
+		dev_err_probe(dev, ret, "memory-region init failed\n");
+		goto err_pm_put;
+	}
+
+	/*
+	 * Clear any latched status and mask every source before requesting the
+	 * line: a pending bit arriving on an unmasked line makes the core
+	 * disable the interrupt ("nobody cared"). drm_crtc_vblank_on() unmasks
+	 * VTTHD1 later.
+	 */
+	vdp->irq = platform_get_irq_optional(pdev, 0);
+	if (vdp->irq >= 0) {
+		vo_write(vdp, VO_MSKINTSTA, ~0u);
+		vo_write(vdp, VO_INTMSK, ~0u);
+
+		ret = devm_request_irq(dev, vdp->irq, histb_vdp2_irq_handler,
+				       IRQF_SHARED, dev_name(dev), vdp);
+		if (ret) {
+			dev_err_probe(dev, ret, "request_irq failed\n");
+			goto err_pm_put;
+		}
+	}
+
+	ret = histb_vdp2_add_master(dev);
+	if (ret)
+		goto err_pm_put;
+
+	return 0;
+
+err_pm_put:
+	pm_runtime_put_sync(dev);
+err_pm_disable:
+	pm_runtime_disable(dev);
+	return ret;
+}
+
+static void histb_vdp2_remove(struct platform_device *pdev)
+{
+	component_master_del(&pdev->dev, &histb_vdp2_master_ops);
+
+	pm_runtime_put_sync_suspend(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
+}
+
+/*
+ * drm_dev_register() documents that a KMS driver stops the pipeline at shutdown
+ * and reboot: the channel would otherwise keep scanning a framebuffer whose
+ * pages are about to be torn down underneath it.
+ */
+static void histb_vdp2_shutdown(struct platform_device *pdev)
+{
+	struct histb_vdp2 *vdp = platform_get_drvdata(pdev);
+	struct histb_vdp2_display *disp = READ_ONCE(vdp->disp);
+
+	if (disp)
+		drm_atomic_helper_shutdown(disp->drm);
+}
+
+static const struct of_device_id histb_vdp2_of_match[] = {
+	{ .compatible = "hisilicon,hi3798mv100-vdp" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, histb_vdp2_of_match);
+
+static struct platform_driver histb_vdp2_platform_driver = {
+	.probe		= histb_vdp2_probe,
+	.remove		= histb_vdp2_remove,
+	.shutdown	= histb_vdp2_shutdown,
+	.driver		= {
+		.name			= "histb-vdp2",
+		.of_match_table		= histb_vdp2_of_match,
+		.pm			= pm_ptr(&histb_vdp2_pm_ops),
+	},
+};
+module_platform_driver(histb_vdp2_platform_driver);
+
+MODULE_AUTHOR("David Yang <mmyangfl@gmail.com>");
+MODULE_DESCRIPTION("DRM driver for the HiSTB VDP v2 display engine (hi3798mv100)");
+MODULE_LICENSE("GPL");
