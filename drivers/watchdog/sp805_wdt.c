@@ -254,8 +254,18 @@ sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 	device_property_read_u64(&adev->dev, "clock-frequency", &rate);
 
 	wdt->clk = devm_clk_get_optional(&adev->dev, NULL);
-	if (IS_ERR(wdt->clk))
+	/*
+	 * A deferred clock provider must not delay the arming: this driver
+	 * pre-arms the watchdog at probe so the board survives the early
+	 * panics of the corruption family, and femac probes right after us.
+	 * With a DT clock-frequency we can arm without the provider.
+	 */
+	if (IS_ERR(wdt->clk) && PTR_ERR(wdt->clk) == -EPROBE_DEFER && rate) {
+		dev_warn(&adev->dev, "clock provider deferred, using DT rate\n");
+		wdt->clk = NULL;
+	} else if (IS_ERR(wdt->clk)) {
 		return dev_err_probe(&adev->dev, PTR_ERR(wdt->clk), "Clock not found\n");
+	}
 
 	wdt->rate = clk_get_rate(wdt->clk);
 	if (!wdt->rate)
@@ -298,6 +308,19 @@ sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 		wdt_enable(&wdt->wdd);
 		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
 	}
+
+	/*
+	 * Arm unconditionally: the board can panic or wedge before any
+	 * user-space keeper starts feeding, and wdt_restart() cannot reset
+	 * a clock-gated watchdog (this was "Reboot failed -- System halted"
+	 * on early panics).  Nowayout keeps it armed afterwards; a fresh
+	 * hardware reset clears it anyway.
+	 */
+	if (wdt_config(&wdt->wdd, false))
+		dev_warn(&adev->dev, "cannot pre-arm watchdog\n");
+	else
+		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
+	watchdog_set_nowayout(&wdt->wdd, true);
 
 	watchdog_stop_on_reboot(&wdt->wdd);
 	ret = watchdog_register_device(&wdt->wdd);
@@ -368,7 +391,17 @@ static struct amba_driver sp805_wdt_driver = {
 	.remove = sp805_wdt_remove,
 };
 
-module_amba_driver(sp805_wdt_driver);
+/*
+ * Register at subsys_initcall, not device_initcall: the corruption family
+ * panics in femac's probe at ~2.1s and this driver must have the watchdog
+ * armed before that.  The amba devices are created by of_platform_populate
+ * at arch_initcall, so subsys is the earliest safe level.
+ */
+static int __init sp805_wdt_early_init(void)
+{
+	return amba_driver_register(&sp805_wdt_driver);
+}
+subsys_initcall(sp805_wdt_early_init);
 
 MODULE_AUTHOR("Viresh Kumar <vireshk@kernel.org>");
 MODULE_DESCRIPTION("ARM SP805 Watchdog Driver");
