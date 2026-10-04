@@ -16,4 +16,8 @@ extern void hix5hd2_set_cpu(int cpu, bool enable);
 extern void hix5hd2_cpu_die(unsigned int cpu);
 
 extern void hip01_set_cpu(int cpu, bool enable);
+
+void hi3798_set_cpu(int cpu, bool enable);
+void hi3798_cpu_die(unsigned int cpu);
+int hi3798_cpu_kill(unsigned int cpu);
 #endif
