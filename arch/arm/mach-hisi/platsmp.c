@@ -182,6 +182,46 @@ static const struct smp_operations hip01_smp_ops __initconst = {
 	.smp_boot_secondary     = hip01_boot_secondary,
 };
 
+static void hi3798_smp_prepare_cpus(unsigned int max_cpus)
+{
+	unsigned int i;
+	unsigned int l2ctlr;
+	unsigned int ncores;
+
+	asm ("mrc p15, 1, %0, c9, c0, 2\n" : "=r" (l2ctlr));
+	ncores = ((l2ctlr >> 24) & 0x3) + 1;
+
+	pr_info("smp: %u cores detected\n", ncores);
+	if (ncores > max_cpus) {
+		pr_warn("smp: %u cores greater than maximum (%u), clipping\n",
+			ncores, max_cpus);
+		ncores = max_cpus;
+	}
+	for (i = 0; i < ncores; i++)
+		set_cpu_possible(i, true);
+
+	/* Put the boot address in this magic register */
+	hix5hd2_set_scu_boot_addr(HIX5HD2_BOOT_ADDRESS,
+				  __pa_symbol(secondary_startup));
+}
+
+static int hi3798_boot_secondary(unsigned int cpu, struct task_struct *idle)
+{
+	hi3798_set_cpu(cpu, true);
+	arch_send_wakeup_ipi_mask(cpumask_of(cpu));
+	return 0;
+}
+
+static const struct smp_operations hi3798_smp_ops __initconst = {
+	.smp_prepare_cpus	= hi3798_smp_prepare_cpus,
+	.smp_boot_secondary	= hi3798_boot_secondary,
+#ifdef CONFIG_HOTPLUG_CPU
+	.cpu_die		= hi3798_cpu_die,
+	.cpu_kill		= hi3798_cpu_kill,
+#endif
+};
+
 CPU_METHOD_OF_DECLARE(hi3xxx_smp, "hisilicon,hi3620-smp", &hi3xxx_smp_ops);
 CPU_METHOD_OF_DECLARE(hix5hd2_smp, "hisilicon,hix5hd2-smp", &hix5hd2_smp_ops);
 CPU_METHOD_OF_DECLARE(hip01_smp, "hisilicon,hip01-smp", &hip01_smp_ops);
+CPU_METHOD_OF_DECLARE(hi3798_smp, "hisilicon,hi3798-smp", &hi3798_smp_ops);

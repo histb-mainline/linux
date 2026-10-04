@@ -50,3 +50,12 @@ DT_MACHINE_START(HI3620, "Hisilicon Hi3620 (Flattened Device Tree)")
 	.map_io		= hi3620_map_io,
 	.dt_compat	= hi3xxx_compat,
 MACHINE_END
+
+static const char *const hi3798mv100_compat[] __initconst = {
+	"hisilicon,hi3798mv100",
+	NULL,
+};
+
+DT_MACHINE_START(HI3798MV100, "HiSilicon Hi3798MV100 (Flattened Device Tree)")
+	.dt_compat	= hi3798mv100_compat,
+MACHINE_END
