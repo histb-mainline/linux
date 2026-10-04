@@ -1,0 +1,17 @@
+config DRM_HISTB_VO
+	tristate "DRM Support for HiSTB VO (hi3798mv100)"
+	depends on DRM && OF && ARM
+	select DRM_GEM_DMA_HELPER
+	select DRM_KMS_HELPER
+	select DRM_DISPLAY_HELPER
+	select DRM_BRIDGE_CONNECTOR
+	select DRM_CLIENT_SELECTION
+	help
+	  Choose this option for DRM support for the VO (VDP v2) display
+	  controller found on HiSilicon HiSTB SoCs such as the
+	  hi3798mv100.  It exposes one CRTC with a primary plane and sends
+	  its output to the HDMI transmitter selected through the device
+	  tree of_graph port@0 endpoint.
+
+	  If in doubt, say N.
+
