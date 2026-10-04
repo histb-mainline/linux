@@ -54,7 +54,7 @@
 #define CPU0_SRST_REQ_EN		(1 << 0)
 
 #define HIX5HD2_PERI_CRG20		0x50
-#define CRG20_CPU1_RESET		(1 << 17)
+#define CRG20_ARM_SRST(i)		BIT((i) + 16)
 
 #define HIX5HD2_PERI_PMC0		0x1000
 #define PMC0_CPU1_WAIT_MTCOMS_ACK	(1 << 8)
@@ -63,6 +63,21 @@
 
 #define HIP01_PERI9                    0x50
 #define PERI9_CPU1_RESET               (1 << 1)
+
+/*
+ * Hi3798 core release, in the CRG (the same block the clock driver uses):
+ * CRG18 switches the CPU clock and, with its bit 10, starts the cluster
+ * logic; CRG20 holds three per-core reset requests (arm, cluster_dbg,
+ * arm_por) which all have to be released before a core fetches from the
+ * boot vector. The value written to switch the clock is taken from the
+ * vendor boot code - only bit 10 is documented on the CRG18 side.
+ */
+#define HI3798_PERI_CRG18		0x48
+#define CRG18_CPU_SW_BEGIN		BIT(10)
+#define CRG18_CPU_CLK			0x306
+#define HI3798_PERI_CRG20		0x50
+#define CRG20_ARM_POR_SRST(i)		BIT((i) + 12)
+#define CRG20_CLUSTER_DBG_SRST(i)	BIT((i) + 20)
 
 enum {
 	HI3620_CTRL,
@@ -203,7 +218,7 @@ void hix5hd2_set_cpu(int cpu, bool enable)
 		writel_relaxed(val, ctrl_base + HIX5HD2_PERI_PMC0);
 		/* unreset */
 		val = readl_relaxed(ctrl_base + HIX5HD2_PERI_CRG20);
-		val &= ~CRG20_CPU1_RESET;
+		val &= ~CRG20_ARM_SRST(cpu);
 		writel_relaxed(val, ctrl_base + HIX5HD2_PERI_CRG20);
 	} else {
 		/* power down cpu1 */
@@ -211,10 +226,9 @@ void hix5hd2_set_cpu(int cpu, bool enable)
 		val |= PMC0_CPU1_PMC_ENABLE | PMC0_CPU1_POWERDOWN;
 		val &= ~PMC0_CPU1_WAIT_MTCOMS_ACK;
 		writel_relaxed(val, ctrl_base + HIX5HD2_PERI_PMC0);
-
 		/* reset */
 		val = readl_relaxed(ctrl_base + HIX5HD2_PERI_CRG20);
-		val |= CRG20_CPU1_RESET;
+		val |= CRG20_ARM_SRST(cpu);
 		writel_relaxed(val, ctrl_base + HIX5HD2_PERI_CRG20);
 	}
 }
@@ -247,6 +261,56 @@ void hip01_set_cpu(int cpu, bool enable)
 	}
 }
 
+void hi3798_set_cpu(int cpu, bool enable)
+{
+	u32 val;
+	u32 val_crg18;
+
+	if (!ctrl_base) {
+		if (!hix5hd2_hotplug_init()) {
+			WARN(1, "CPU%u: no cpuctrl node to release it\n", cpu);
+			return;
+		}
+	}
+
+	if (enable) {
+		val_crg18 = readl_relaxed(ctrl_base + HI3798_PERI_CRG18);
+		writel_relaxed(CRG18_CPU_CLK, ctrl_base + HI3798_PERI_CRG18);
+		writel_relaxed(CRG18_CPU_CLK | CRG18_CPU_SW_BEGIN,
+			       ctrl_base + HI3798_PERI_CRG18);
+		/* unreset arm_por_srst_req */
+		val = readl_relaxed(ctrl_base + HI3798_PERI_CRG20);
+		val &= ~CRG20_ARM_POR_SRST(cpu);
+		writel_relaxed(val, ctrl_base + HI3798_PERI_CRG20);
+		/* unreset cluster_dbg_srst_req */
+		val = readl_relaxed(ctrl_base + HI3798_PERI_CRG20);
+		val &= ~CRG20_CLUSTER_DBG_SRST(cpu);
+		writel_relaxed(val, ctrl_base + HI3798_PERI_CRG20);
+		/* unreset */
+		val = readl_relaxed(ctrl_base + HI3798_PERI_CRG20);
+		val &= ~CRG20_ARM_SRST(cpu);
+		writel_relaxed(val, ctrl_base + HI3798_PERI_CRG20);
+		/* restore freq */
+		val = val_crg18 & ~CRG18_CPU_SW_BEGIN;
+		writel_relaxed(val, ctrl_base + HI3798_PERI_CRG18);
+		writel_relaxed(val_crg18, ctrl_base + HI3798_PERI_CRG18);
+	} else {
+		/* reset */
+		val = readl_relaxed(ctrl_base + HI3798_PERI_CRG20);
+		val |= CRG20_ARM_SRST(cpu);
+		writel_relaxed(val, ctrl_base + HI3798_PERI_CRG20);
+		/* reset cluster_dbg_srst_req */
+		val = readl_relaxed(ctrl_base + HI3798_PERI_CRG20);
+		val |= CRG20_CLUSTER_DBG_SRST(cpu);
+		writel_relaxed(val, ctrl_base + HI3798_PERI_CRG20);
+		/* reset arm_por_srst_req */
+		val = readl_relaxed(ctrl_base + HI3798_PERI_CRG20);
+		val |= CRG20_ARM_POR_SRST(cpu);
+		writel_relaxed(val, ctrl_base + HI3798_PERI_CRG20);
+	}
+}
+
+#ifdef CONFIG_HOTPLUG_CPU
 static inline void cpu_enter_lowpower(void)
 {
 	unsigned int v;
@@ -268,7 +332,6 @@ static inline void cpu_enter_lowpower(void)
 	  : "cc");
 }
 
-#ifdef CONFIG_HOTPLUG_CPU
 void hi3xxx_cpu_die(unsigned int cpu)
 {
 	cpu_enter_lowpower();
@@ -294,5 +357,37 @@ void hix5hd2_cpu_die(unsigned int cpu)
 {
 	flush_cache_all();
 	hix5hd2_set_cpu(cpu, false);
+}
+
+void hi3798_cpu_die(unsigned int cpu)
+{
+	/*
+	 * Leave cache coherency and idle here - this core must not reset
+	 * itself, because the surviving cores may still have a broadcast
+	 * maintenance operation in flight that expects it to answer.
+	 * ->cpu_kill() holds it in reset, and ->smp_boot_secondary()
+	 * releases it again on the next online, where it re-enters through
+	 * the boot vector. A spurious wake-up just idles again.
+	 */
+	cpu_enter_lowpower();
+
+	while (1)
+		cpu_do_idle();
+}
+
+int hi3798_cpu_kill(unsigned int cpu)
+{
+	unsigned long timeout = jiffies + msecs_to_jiffies(5);
+
+	/*
+	 * Give the dying core a window to settle into WFI before it is
+	 * taken out of the cluster; the CRG has no "core is parked" status
+	 * bit to poll for, so this can only be a deadline.
+	 */
+	while (time_before(jiffies, timeout))
+		cpu_relax();
+
+	hi3798_set_cpu(cpu, false);
+	return 1;
 }
 #endif
