@@ -7,4 +7,14 @@ config SND_I2S_HI6210_I2S
 	help
 	  Hisilicon I2S
 
+config SND_SOC_HISTB_AIAO_I2S
+	tristate "HiSTB AIAO I2S ports"
+	depends on ARCH_HISI || COMPILE_TEST
+	select SND_SOC_GENERIC_DMAENGINE_PCM
+	help
+	  Say Y here if you want to use the I2S ports of the AIAO audio block
+	  found on HiSilicon STB SoCs such as the Hi3798MV100 and the
+	  Hi3716CV200. Each port is an I2S master with its own clock generator and
+	  its own ring-buffer engine.
+
 endmenu
