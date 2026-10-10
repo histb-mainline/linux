@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2016-2017 HiSilicon Technologies Co., Ltd. Copyright (c) 2023
+ * David Yang
+ */
+
+/*
+ * The Hi3798 address map, shared by every member of the family, and nothing
+ * else.
+ *
+ * The four controller windows are the SDK's HI_SYS_BASE_ADDR,
+ * HI_PERI_BASE_ADDR, HI_IO_BASE_ADDR and HI_CRG_BASE_ADDR
+ * (common/drv/include/hi_reg_common.h:68-71). They sit outside the #ifdef that
+ * selects a chip's register headers, and that #ifdef (hi_reg_common.h:7) gives
+ * Hi3798MV100, Hi3796MV100 and Hi3716DV100 one shared set, so another 32-bit
+ * member can include this file unchanged.
+ *
+ * Peripheral nodes belong to the per-SoC file instead. Each of them is bound
+ * through a clock or reset cell, and those name a field of one SoC's clock
+ * controller in that SoC's own binding header -- and they do move inside the
+ * family: the DMAC gate is PERI_CRG41 (0xa4) on MV100 but PERI_CRG227 (0x38c)
+ * on MV200, and the HDMI controller reset pair is bits 9/8 on MV100 but 7/6 on
+ * MV200. Hi3798CV200 shows the same split from the other side: its dtsi uses
+ * the HISTB_* ids of dt-bindings/clock/histb-clock.h, a different id space from
+ * HI3798MV100_*.
+ *
+ * The one clock this file does carry is the crystal reference: every vendor
+ * description of these parts names the same 24 MHz "clk24M" source. The bus
+ * containers take their interrupt parent from the CPU layer, which is where
+ * that controller's own window is described.
+ */
+
+/ {
+	compatible = "hisilicon,hi3798";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	xtal24mhz: xtal24mhz {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <24000000>;
+	};
+
+	soc: soc@f0000000 {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0 0xf0000000 0x10000000>;
+
+		crg: clock-reset-controller@8a22000 {
+			compatible = "syscon", "simple-mfd";
+			reg = <0x8a22000 0x1000>;
+			#clock-cells = <1>;
+			#reset-cells = <2>;
+		};
+
+		sysctrl: system-controller@8000000 {
+			compatible = "syscon";
+			reg = <0x8000000 0x1000>;
+			#clock-cells = <1>;
+			#reset-cells = <2>;
+		};
+
+		perictrl: peripheral-controller@8a20000 {
+			compatible = "syscon", "simple-mfd";
+			reg = <0x8a20000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges = <0x0 0x8a20000 0x1000>;
+		};
+
+		pmx0: pinconf@8a21000 {
+			compatible = "pinconf-single";
+			reg = <0x8a21000 0x180>;
+			#pinctrl-cells = <1>;
+			pinctrl-single,register-width = <32>;
+			pinctrl-single,function-mask = <7>;
+
+			range: gpio-range {
+				#pinctrl-single,gpio-range-cells = <3>;
+			};
+		};
+
+		apb: apb {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			compatible = "simple-bus";
+			ranges;
+		};
+
+		ahb: ahb {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			compatible = "simple-bus";
+			ranges;
+		};
+	};
+};
