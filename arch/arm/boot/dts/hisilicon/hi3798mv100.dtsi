@@ -1,0 +1,816 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+/*
+ * Copyright (c) 2023 David Yang
+ */
+
+#include <dt-bindings/clock/hisilicon,hi3798mv100-crg.h>
+#include <dt-bindings/clock/hisilicon,hi3798mv100-sysctrl.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/pinctrl/hisi.h>
+#include "hi3798-s5.dtsi"
+
+#define PINCTRL_REG(i) ((i) * 4)
+
+/* value, enable bits, disable bits, mask */
+#define PINCTRL_PULLDOWN(value, enable, disable, mask) \
+	(value << 12) (enable << 12) (disable << 12) (mask << 12)
+#define PINCTRL_PULLUP(value, enable, disable, mask) \
+	(value << 12) (enable << 12) (disable << 12) (mask << 12)
+#define PINCTRL_SLEW_RATE(value, mask)    (value << 8) (mask << 8)
+#define PINCTRL_DRV_STRENGTH(value, mask) (value << 9) (mask << 9)
+
+/*
+ * Hi3798MV100. A node lives here rather than in the family file as soon as any
+ * property of it names a CRG or PMC field, carries a chip-specific compatible,
+ * or is a block this part does not have -- and a board file only decides which
+ * of these nodes to switch on.
+ *
+ * The register windows and interrupt lines are the ones in this chip's own
+ * memory map and interrupt table; the GPIO block stops at GPIO6 (the window
+ * after GPIO4 is reserved, and lines 115 to 125 are reserved too), and the
+ * timer pair at 0xf8a81000 is the secure one, which the SDK's machine headers
+ * for this platform leave unallocated.
+ */
+
+/ {
+	compatible = "hisilicon,hi3798mv100";
+};
+
+&soc {
+	/*
+	 * Not a sub-node of &sysctrl: the clock driver binds that node, so
+	 * nothing would populate a child there. Same shape as hi3519.dtsi and
+	 * hisi-x5hd2.dtsi.
+	 */
+	reboot {
+		compatible = "syscon-reboot";
+		regmap = <&sysctrl>;
+		offset = <0x4>;
+		mask = <0xdeadbeef>;
+	};
+
+	venc: video-encoder@8c80000 {
+		compatible = "hisilicon,hi3798mv100-venc";
+		reg = <0x8c80000 0x10000>;
+		interrupts = <GIC_SPI 101 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_VENC_CLK>;
+		clock-names = "venc";
+		resets = <&crg 0x8c 4>;
+		reset-names = "venc";
+		status = "disabled";
+	};
+
+	vdec: video-codec@8c30000 {
+		compatible = "hisilicon,hi3798mv100-vdec";
+		reg = <0x8c30000 0x1100>, <0x8c3c000 0x1000>;
+		reg-names = "vdm", "scd";
+		interrupts = <GIC_SPI 95 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_VDH_CLK>;
+		clock-names = "vdec";
+		resets = <&crg 0x78 4>, <&crg 0x78 6>;
+		reset-names = "global", "vdm";
+		status = "disabled";
+	};
+
+	jpgd: jpeg-decoder@8c40000 {
+		compatible = "hisilicon,hi3798mv100-jpgd";
+		reg = <0x8c40000 0x6f0>;
+		interrupts = <GIC_SPI 97 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_JPGD_CLK>;
+		clock-names = "jpgd";
+		resets = <&crg 0x7c 4>;
+		reset-names = "jpgd";
+		status = "disabled";
+	};
+
+	jpge: jpeg-encoder@8c90000 {
+		compatible = "hisilicon,hi3798mv100-jpge";
+		reg = <0x8c90000 0x10c0>;
+		interrupts = <GIC_SPI 102 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_JPGE_CLK>;
+		clock-names = "jpge";
+		resets = <&crg 0x90 4>;
+		reset-names = "jpge";
+		status = "disabled";
+	};
+
+	eth0: ethernet@9840000 {
+		compatible = "hisilicon,hisi-femac-v2";
+		reg = <0x9840000 0x1000>, <0x9841300 0x200>;
+		interrupts = <GIC_SPI 71 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_ETH_CLK>;
+		resets = <&crg 0xcc 4>, <&crg 0x120 4>;
+		reset-names = "mac", "phy";
+		status = "disabled";
+
+		phy-handle = <&phy1>;
+		phy-mode = "mii";
+		hisilicon,phy-reset-delays-us = <10000 10000 20000>;
+	};
+
+	mdio0: mdio@9841100 {
+		compatible = "hisilicon,hisi-femac-mdio";
+		reg = <0x9841100 0x10>;
+		clocks = <&crg HI3798MV100_FEPHY_CLK>;
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		phy1: phy@1 {
+			reg = <1>;
+			/* the boot firmware patches the provisioned address here */
+			mac-address = [00 00 00 00 00 00];
+		};
+	};
+};
+
+&crg {
+	compatible = "hisilicon,hi3798mv100-crg", "hisilicon,cpuctrl", "syscon", "simple-mfd";
+};
+
+&sysctrl {
+	compatible = "hisilicon,hi3798mv100-sysctrl", "syscon";
+};
+
+&perictrl {
+	usb2_phy1: usb2-phy@124 {
+		compatible = "hisilicon,hi3798mv100-usb2-phy";
+		reg = <0x124 0x4>;
+		clocks = <&crg HI3798MV100_USB20_PHY1_REF_CLK>;
+		resets = <&crg 0xbc 8>;
+		status = "disabled";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		usb2_phy1_port0: phy@0 {
+			reg = <0>;
+			#phy-cells = <0>;
+			resets = <&crg 0xbc 9>;
+		};
+
+		usb2_phy1_port1: phy@1 {
+			reg = <1>;
+			#phy-cells = <0>;
+			resets = <&crg 0xbc 11>;
+		};
+	};
+
+	usb2_phy2: usb2-phy@158 {
+		compatible = "hisilicon,hi3798mv100-usb2-phy";
+		reg = <0x158 0x4>;
+		clocks = <&crg HI3798MV100_USB21_PHY1_REF_CLK>;
+		resets = <&crg 0x190 8>;
+		status = "disabled";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		usb2_phy2_port0: phy@0 {
+			reg = <0>;
+			#phy-cells = <0>;
+			resets = <&crg 0x190 9>;
+		};
+	};
+};
+
+&apb {
+	ir: ir@8001000 {
+		compatible = "hisilicon,hix5hd2-ir";
+		reg = <0x8001000 0x1000>;
+		interrupts = <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&sysctrl HI3798MV100_IR_CLK>;
+		clock-names = "apb_pclk";
+		resets = <&sysctrl 0x48 5>;
+		reset-names = "reset";
+		status = "disabled";
+	};
+
+	/*
+	 * The manual maps the TRNG as the 4 KiB window at 0xf8005000, and the
+	 * vendor's live path on this SoC reads its control, data and status
+	 * registers at +0, +4 and +8. The +0x200 offsets used by later chips
+	 * reach the same registers here, and the boot loader already has the
+	 * shared SHA/TRNG clock gate enabled, so the device needs no clock or
+	 * reset of its own.
+	 */
+	rng: rng@8005000 {
+		compatible = "hisilicon,histb-rng";
+		reg = <0x8005000 0x1000>;
+		status = "disabled";
+	};
+
+	/*
+	 * These cells implement no PrimeCell ID block: the registers at
+	 * +0xFE0..+0xFFC read zero on all five instances, so the nodes carry no
+	 * "arm,primecell" and are never made into AMBA devices -- an AMBA
+	 * device whose pid cannot be read is deferred forever.
+	 */
+	timer0: timer@8002000 {
+		compatible = "arm,sp804";
+		reg = <0x8002000 0x1000>;
+		/* timer00 & timer01 */
+		interrupts = <GIC_SPI 24 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&xtal24mhz>;
+		clock-names = "apb_pclk";
+		status = "disabled";
+	};
+
+	timer1: timer@8a29000 {
+		/*
+		 * Only used in NORMAL state, not available in SLOW or DOZE
+		 * state. The rate is fixed in 24MHz.
+		 */
+		compatible = "arm,sp804";
+		reg = <0x8a29000 0x1000>;
+		/* timer10 & timer11 */
+		interrupts = <GIC_SPI 25 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI 58 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&xtal24mhz>;
+		clock-names = "apb_pclk";
+		status = "disabled";
+	};
+
+	timer2: timer@8a2a000 {
+		compatible = "arm,sp804";
+		reg = <0x8a2a000 0x1000>;
+		/* timer20 & timer21 */
+		interrupts = <GIC_SPI 26 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI 59 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&xtal24mhz>;
+		clock-names = "apb_pclk";
+		status = "disabled";
+	};
+
+	timer3: timer@8a2b000 {
+		compatible = "arm,sp804";
+		reg = <0x8a2b000 0x1000>;
+		/* timer30 & timer31 */
+		interrupts = <GIC_SPI 27 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI 60 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&xtal24mhz>;
+		clock-names = "apb_pclk";
+		status = "disabled";
+	};
+
+	timer4: timer@8a81000 {
+		compatible = "arm,sp804";
+		reg = <0x8a81000 0x1000>;
+		/* timer40 & timer41 */
+		interrupts = <GIC_SPI 28 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&xtal24mhz>;
+		clock-names = "apb_pclk";
+		status = "disabled";
+	};
+
+	uart0: uart@8b00000 {
+		compatible = "arm,pl011", "arm,primecell";
+		reg = <0x8b00000 0x1000>;
+		interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&sysctrl HI3798MV100_UART0_CLK>,
+			<&sysctrl HI3798MV100_UART0_CLK>;
+		clock-names = "uartclk", "apb_pclk";
+		resets = <&sysctrl 0x48 13>;
+		reset-names = "reset";
+		status = "disabled";
+	};
+
+	uart1: uart@8006000 {
+		compatible = "arm,pl011", "arm,primecell";
+		reg = <0x8006000 0x1000>;
+		interrupts = <GIC_SPI 50 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_UART1_CLK>, <&crg HI3798MV100_UART1_CLK>;
+		clock-names = "uartclk", "apb_pclk";
+		resets = <&crg 0x68 1>;
+		reset-names = "reset";
+		status = "disabled";
+	};
+
+	uart2: uart@8b02000 {
+		compatible = "arm,pl011", "arm,primecell";
+		reg = <0x8b02000 0x1000>;
+		interrupts = <GIC_SPI 51 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_UART2_CLK>, <&crg HI3798MV100_UART2_CLK>;
+		clock-names = "uartclk", "apb_pclk";
+		resets = <&crg 0x68 5>;
+		reset-names = "reset";
+		status = "disabled";
+	};
+
+	gpio0: gpio@8b20000 {
+		compatible = "arm,pl061", "arm,primecell";
+		reg = <0x8b20000 0x1000>;
+		interrupts = <GIC_SPI 108 IRQ_TYPE_LEVEL_HIGH>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <8>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		clocks = <&crg HI3798MV100_APB_CLK>;
+		clock-names = "apb_pclk";
+		gpio-ranges = <
+			&pmx0 2 10 1
+			&pmx0 3 79 1
+			&pmx0 4 21 4
+		>;
+		gpio-line-names =
+			"GPIO0_0", "GPIO0_1", "GPIO0_2", "GPIO0_3",
+			"GPIO0_4", "GPIO0_5", "GPIO0_6", "GPIO0_7";
+		status = "disabled";
+	};
+
+	gpio1: gpio@8b21000 {
+		compatible = "arm,pl061", "arm,primecell";
+		reg = <0x8b21000 0x1000>;
+		interrupts = <GIC_SPI 109 IRQ_TYPE_LEVEL_HIGH>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <8>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		clocks = <&crg HI3798MV100_APB_CLK>;
+		clock-names = "apb_pclk";
+		status = "disabled";
+	};
+
+	gpio2: gpio@8b22000 {
+		compatible = "arm,pl061", "arm,primecell";
+		reg = <0x8b22000 0x1000>;
+		interrupts = <GIC_SPI 110 IRQ_TYPE_LEVEL_HIGH>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <8>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		clocks = <&crg HI3798MV100_APB_CLK>;
+		clock-names = "apb_pclk";
+		gpio-ranges = <
+			&pmx0 0 25 1
+			&pmx0 1 54 1
+			&pmx0 2 55 2
+		>;
+		gpio-line-names =
+			"GPIO2_0", "GPIO2_1", "GPIO2_2", "GPIO2_3",
+			"", "GPIO2_5", "GPIO2_6", "GPIO2_7";
+		status = "disabled";
+	};
+
+	gpio3: gpio@8b23000 {
+		compatible = "arm,pl061", "arm,primecell";
+		reg = <0x8b23000 0x1000>;
+		interrupts = <GIC_SPI 111 IRQ_TYPE_LEVEL_HIGH>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <8>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		clocks = <&crg HI3798MV100_APB_CLK>;
+		clock-names = "apb_pclk";
+		gpio-line-names =
+			"GPIO3_0", "GPIO3_1", "GPIO3_2", "GPIO3_3",
+			"GPIO3_4", "GPIO3_5", "GPIO3_6", "GPIO3_7";
+		status = "disabled";
+	};
+
+	gpio4: gpio@8b24000 {
+		compatible = "arm,pl061", "arm,primecell";
+		reg = <0x8b24000 0x1000>;
+		interrupts = <GIC_SPI 112 IRQ_TYPE_LEVEL_HIGH>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <8>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		clocks = <&crg HI3798MV100_APB_CLK>;
+		clock-names = "apb_pclk";
+		gpio-ranges = <
+			&pmx0 0 80 2
+		>;
+		gpio-line-names =
+			"GPIO4_0", "GPIO4_1", "GPIO4_2", "GPIO4_3",
+			"GPIO4_4", "GPIO4_5", "GPIO4_6", "GPIO4_7";
+		status = "disabled";
+	};
+
+	gpio5: gpio@8004000 {
+		compatible = "arm,pl061", "arm,primecell";
+		reg = <0x8004000 0x1000>;
+		interrupts = <GIC_SPI 113 IRQ_TYPE_LEVEL_HIGH>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <8>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		clocks = <&crg HI3798MV100_APB_CLK>;
+		clock-names = "apb_pclk";
+		gpio-line-names =
+			"GPIO5_0", "GPIO5_1", "GPIO5_2", "",
+			"", "GPIO5_5", "GPIO5_6", "";
+		status = "disabled";
+	};
+
+	gpio6: gpio@8b26000 {
+		compatible = "arm,pl061", "arm,primecell";
+		reg = <0x8b26000 0x1000>;
+		interrupts = <GIC_SPI 114 IRQ_TYPE_LEVEL_HIGH>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <8>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		clocks = <&crg HI3798MV100_APB_CLK>;
+		clock-names = "apb_pclk";
+		gpio-ranges = <
+			&pmx0 0 82 2
+		>;
+		gpio-line-names =
+			"GPIO6_0", "GPIO6_1", "GPIO6_2", "GPIO6_3",
+			"GPIO6_4", "GPIO6_5", "GPIO6_6", "GPIO6_7";
+		status = "disabled";
+	};
+
+	wdt0: watchdog@8a2c000 {
+		compatible = "arm,sp805", "arm,primecell";
+		arm,primecell-periphid = <0x00141805>;
+		reg = <0x8a2c000 0x1000>;
+		interrupts = <GIC_SPI 29 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_WDT_CLK>,
+			 <&crg HI3798MV100_APB_CLK>;
+		clock-names = "wdog_clk", "apb_pclk";
+		status = "disabled";
+	};
+
+	hdmi: hdmi@8ce0000 {
+		compatible = "hisilicon,hi3798mv100-hdmi";
+		reg = <0x8ce0000 0x10000>;
+		interrupts = <GIC_SPI 88 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_HDMI_CTRL_CLK>,
+			 <&crg HI3798MV100_HDMI_PHY_CLK>;
+		clock-names = "ctrl", "phy";
+		resets = <&crg 0x10c 9>, <&crg 0x10c 8>, <&crg 0x110 4>;
+		reset-names = "base", "bus", "phy";
+		#sound-dai-cells = <0>;
+		status = "disabled";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				hdmi_in_vdp: endpoint {
+				remote-endpoint = <&vdp_out_hdmi>;
+				};
+			};
+		};
+	};
+
+	i2c0: i2c@8b10000 {
+		compatible = "hisilicon,hix5hd2-i2c";
+		reg = <0x8b10000 0x1000>;
+		interrupts = <GIC_SPI 38 IRQ_TYPE_LEVEL_HIGH>;
+		clock-frequency = <400000>;
+		clocks = <&crg HI3798MV100_I2C0_CLK>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	i2c1: i2c@8b11000 {
+		compatible = "hisilicon,hix5hd2-i2c";
+		reg = <0x8b11000 0x1000>;
+		interrupts = <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>;
+		clock-frequency = <400000>;
+		clocks = <&crg HI3798MV100_I2C1_CLK>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	i2c2: i2c@8b12000 {
+		compatible = "hisilicon,hix5hd2-i2c";
+		reg = <0x8b12000 0x1000>;
+		interrupts = <GIC_SPI 40 IRQ_TYPE_LEVEL_HIGH>;
+		clock-frequency = <400000>;
+		clocks = <&crg HI3798MV100_I2C2_CLK>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	spi0: spi@8b1a000 {
+		compatible = "arm,pl022", "arm,primecell";
+		reg = <0x8b1a000 0x1000>;
+		interrupts = <GIC_SPI 45 IRQ_TYPE_LEVEL_HIGH>;
+		num-cs = <1>;
+		clocks = <&crg HI3798MV100_SPI0_CLK>, <&crg HI3798MV100_SPI0_CLK>;
+		clock-names = "sspclk", "apb_pclk";
+		resets = <&crg 0x70 1>;
+		reset-names = "reset";
+		status = "disabled";
+	};
+
+	/*
+	 * MV100 maps the core rail to PMC6 and the CPU rail to PMC7; on
+	 * CV200/MV200/MV300 the CPU rail is PMC6.
+	 */
+	vddcore: regulator@8a23018 {
+		compatible = "hisilicon,hi3798cv200-regulator";
+		reg = <0x8a23018 4>;
+		regulator-name = "vdd-core";
+		regulator-min-microvolt = <900000>;
+		regulator-max-microvolt = <1315000>;
+		regulator-always-on;
+	};
+
+	vddcpu: regulator@8a2301c {
+		compatible = "hisilicon,hi3798cv200-regulator";
+		reg = <0x8a2301c 4>;
+		regulator-name = "vdd-cpu";
+		regulator-min-microvolt = <920000>;
+		regulator-max-microvolt = <1495000>;
+		regulator-always-on;
+	};
+
+	vddgpu: regulator@8a23020 {
+		compatible = "hisilicon,hi3798cv200-regulator";
+		reg = <0x8a23020 4>;
+		regulator-name = "vdd-gpu";
+		regulator-min-microvolt = <900000>;
+		regulator-max-microvolt = <1320000>;
+		regulator-always-on;
+	};
+};
+
+&ahb {
+	aiao: audio@8cd0000 {
+		compatible = "hisilicon,hi3798mv100-aiao-i2s";
+		reg = <0x8cd0000 0x10000>;
+		interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_AIAO_CLK>;
+		resets = <&crg 0x118 4>;
+		#sound-dai-cells = <1>;
+		status = "disabled";
+	};
+
+	vdp: display@8cc0000 {
+		compatible = "hisilicon,hi3798mv100-vdp";
+		reg = <0x8cc0000 0x10000>;
+		interrupts = <GIC_SPI 90 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_VO_HD_CLK>,
+				 <&crg HI3798MV100_VO_CLK>;
+		clock-names = "pix", "vo";
+		resets = <&crg 0xd8 30>;
+		status = "disabled";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				vdp_out_hdmi: endpoint {
+				remote-endpoint = <&hdmi_in_vdp>;
+				};
+			};
+		};
+	};
+
+	/*
+	 * The Mali-450's eight interrupt sources are wire-ORed into one GIC
+	 * line on this SoC: every unit reports the same SPI 94. lima requests
+	 * each unit with IRQF_SHARED and reads its own status register to
+	 * demux, so the repetition here is what the wiring gives us. No
+	 * mali-supply: the GPU shares the core rail on this part.
+	 */
+	gpu: gpu@9200000 {
+		compatible = "hisilicon,hi3798mv100-mali",
+			     "arm,mali-450";
+		reg = <0x9200000 0x30000>;
+		interrupts = <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "gp", "gpmmu", "pp0",
+				  "ppmmu0", "pp1", "ppmmu1",
+				  "pmu", "pp";
+		clocks = <&crg HI3798MV100_GPU_BUS_CLK>,
+				 <&crg HI3798MV100_GPU_CORE_CLK>;
+		clock-names = "bus", "core";
+		resets = <&crg 0xd4 4>;
+		status = "disabled";
+	};
+
+	/* unremovable emmc as mmcblk0 */
+	emmc: mmc@9830000 {
+		compatible = "hisilicon,hi3798cv200-dw-mshc";
+		reg = <0x9830000 0x10000>;
+		interrupts = <GIC_SPI 35 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_MMC_CIU_CLK>,
+				 <&crg HI3798MV100_MMC_BIU_CLK>,
+				 <&crg HI3798MV100_MMC_SAMPLE_CLK>,
+				 <&crg HI3798MV100_MMC_DRV_CLK>;
+		clock-names = "ciu", "biu", "ciu-sample", "ciu-drive";
+		resets = <&crg 0xa0 4>;
+		reset-names = "reset";
+		status = "disabled";
+	};
+
+	sd: mmc@9820000 {
+		compatible = "snps,dw-mshc";
+		reg = <0x9820000 0x10000>;
+		interrupts = <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_SDIO0_CIU_CLK>,
+				 <&crg HI3798MV100_SDIO0_BIU_CLK>;
+		clock-names = "ciu", "biu";
+		resets = <&crg 0x9c 4>;
+		reset-names = "reset";
+		status = "disabled";
+	};
+
+	dmac: dma-controller@9870000 {
+		compatible = "arm,pl080", "arm,primecell";
+		/*
+		 * The block reports 0x0a141080, which is bit for bit the ID the
+		 * PL08x driver reserves for Samsung's PL080S variant: different
+		 * channel configuration offset and 8-word list items, neither of
+		 * which this has.  Declare the plain PL080 ID, whose layout
+		 * matches the register map here.
+		 */
+		arm,primecell-periphid = <0x00041080>;
+		reg = <0x9870000 0x10000>;
+		interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_DMAC_CLK>;
+		clock-names = "apb_pclk";
+		resets = <&crg 0xa4 4>;
+		dma-channels = <4>;
+		#dma-cells = <2>;
+		memcpy-bus-width = <32>;
+		memcpy-burst-size = <256>;
+		status = "disabled";
+	};
+
+	ohci0: usb@9880000 {
+		compatible = "generic-ohci";
+		reg = <0x9880000 0x10000>;
+		interrupts = <GIC_SPI 67 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_USB20_BUS_CLK>,
+				 <&crg HI3798MV100_USB20_12M_CLK>,
+				 <&crg HI3798MV100_USB20_48M_CLK>;
+		clock-names = "bus", "clk12", "clk48";
+		resets = <&crg 0xb8 12>;
+		reset-names = "bus";
+		phys = <&usb2_phy1_port0>, <&usb2_phy1_port1>;
+		phy-names = "usb0", "usb1";
+		status = "disabled";
+	};
+
+	ehci0: usb@9890000 {
+		compatible = "generic-ehci";
+		reg = <0x9890000 0x10000>;
+		interrupts = <GIC_SPI 66 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_USB20_BUS_CLK>,
+				 <&crg HI3798MV100_USB20_PHY_CLK>,
+				 <&crg HI3798MV100_USB20_UTMI_CLK>,
+				 <&crg HI3798MV100_USB20_UTMI_CLK1>;
+		clock-names = "bus", "phy", "utmi0", "utmi1";
+		resets = <&crg 0xb8 12>,
+				 <&crg 0xb8 16>,
+				 <&crg 0xb8 13>,
+				 <&crg 0xb8 14>;
+		reset-names = "bus", "phy", "utmi0", "utmi1";
+		phys = <&usb2_phy1_port0>, <&usb2_phy1_port1>;
+		phy-names = "usb0", "usb1";
+		status = "disabled";
+	};
+
+	/* The second USB2 host pair, and its gate, exist on this part only. */
+	ohci1: usb@9920000 {
+		compatible = "generic-ohci";
+		reg = <0x9920000 0x10000>;
+		interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_USB21_BUS_CLK>,
+				 <&crg HI3798MV100_USB21_12M_CLK>,
+				 <&crg HI3798MV100_USB21_48M_CLK>;
+		clock-names = "bus", "clk12", "clk48";
+		resets = <&crg 0x198 12>;
+		reset-names = "bus";
+		phys = <&usb2_phy2_port0>;
+		phy-names = "usb";
+		status = "disabled";
+	};
+
+	ehci1: usb@9930000 {
+		compatible = "generic-ehci";
+		reg = <0x9930000 0x10000>;
+		interrupts = <GIC_SPI 62 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crg HI3798MV100_USB21_BUS_CLK>,
+				 <&crg HI3798MV100_USB21_PHY_CLK>,
+				 <&crg HI3798MV100_USB21_UTMI_CLK>;
+		clock-names = "bus", "phy", "utmi";
+		resets = <&crg 0x198 12>,
+				 <&crg 0x198 16>,
+				 <&crg 0x198 14>;
+		reset-names = "bus", "phy", "utmi";
+		phys = <&usb2_phy2_port0>;
+		phy-names = "usb";
+		status = "disabled";
+	};
+};
+
+&pmx0 {
+	pinctrl-single,gpio-range = <
+		&range  8 3 2  /* GPIO0_0..2 */
+		&range 79 1 0  /* GPIO0_3 */
+		&range 21 4 5  /* GPIO0_4..7 */
+		&range 25 1 5  /* GPIO2_0 */
+		&range 54 1 2  /* GPIO2_1 */
+		&range 55 2 0  /* GPIO2_2..3 */
+		&range 78 1 1  /* GPIO2_5 */
+		&range 31 1 6  /* GPIO2_6 */
+		&range 32 1 1  /* GPIO2_7 */
+		&range 57 8 0  /* GPIO3_0..7 */
+		&range 80 2 0  /* GPIO4_0..1 */
+		&range 43 1 2  /* GPIO4_2 */
+		&range 44 1 0  /* GPIO4_3 */
+		&range 45 4 2  /* GPIO4_4..7 */
+		&range 82 8 0  /* GPIO6_0..7 */
+	>;
+
+	emmc {
+		emmc_data: emmc-data {
+			pinctrl-single,pins = <
+				PINCTRL_REG(0) MUX_M1  /* SDIO1_CDATA7 */
+				PINCTRL_REG(1) MUX_M1  /* SDIO1_CDATA6 */
+				PINCTRL_REG(2) MUX_M1  /* SDIO1_CDATA5 */
+				PINCTRL_REG(3) MUX_M1  /* SDIO1_CDATA4 */
+				PINCTRL_REG(4) MUX_M1  /* SDIO1_CDATA3 */
+				PINCTRL_REG(5) MUX_M1  /* SDIO1_CDATA2 */
+				PINCTRL_REG(6) MUX_M1  /* SDIO1_CDATA1 */
+				PINCTRL_REG(7) MUX_M1  /* SDIO1_CDATA0 */
+			>;
+		};
+
+		emmc_detect: emmc-detect {
+			pinctrl-single,pins = <
+				PINCTRL_REG(8) MUX_M1  /* SDIO1_CARD_DETECT */
+				PINCTRL_REG(9) MUX_M1  /* SDIO1_CARD_POWER_EN */
+			>;
+		};
+
+		emmc_cwpr: emmc-cwpr {
+			pinctrl-single,pins = <
+				PINCTRL_REG(10) MUX_M1  /* SDIO1_CWPR */
+			>;
+		};
+
+		emmc_ccmd: emmc-ccmd {
+			pinctrl-single,pins = <
+				PINCTRL_REG(11) MUX_M1  /* SDIO1_CCMD */
+			>;
+		};
+
+		emmc_cclk_out: emmc-cclk-out {
+			pinctrl-single,pins = <
+				PINCTRL_REG(12) MUX_M1  /* SDIO1_CCLK_OUT */
+			>;
+		};
+
+		emmc_rst: emmc-rst {
+			pinctrl-single,pins = <
+				PINCTRL_REG(13) MUX_M1  /* SDIO1_RST */
+			>;
+		};
+	};
+
+	sd {
+		sd_data: sd-data {
+			pinctrl-single,pins = <
+				PINCTRL_REG(57) MUX_M1  /* SDIO0_CDATA1 */
+				PINCTRL_REG(58) MUX_M1  /* SDIO0_CDATA0 */
+				PINCTRL_REG(59) MUX_M1  /* SDIO0_CCLK_OUT */
+				PINCTRL_REG(60) MUX_M1  /* SDIO0_CCMD */
+				PINCTRL_REG(61) MUX_M1  /* SDIO0_CDATA3 */
+				PINCTRL_REG(62) MUX_M1  /* SDIO0_CDATA2 */
+			>;
+		};
+
+		sd_detect: sd-detect {
+			pinctrl-single,pins = <
+				PINCTRL_REG(63) MUX_M1  /* SDIO0_CARD_DETECT, low active */
+			>;
+		};
+	};
+
+	hdmi {
+		hdmi_hotplug: hdmi-hotplug {
+			pinctrl-single,pins = <
+				PINCTRL_REG(47) MUX_M1  /* HDMITX_HOTPLUG */
+			>;
+		};
+	};
+};
