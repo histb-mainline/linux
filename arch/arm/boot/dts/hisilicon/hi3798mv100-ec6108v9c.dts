@@ -1,0 +1,331 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+/*
+ * Copyright (c) 2023 David Yang
+ */
+
+/dts-v1/;
+#include <dt-bindings/gpio/gpio.h>
+#include "hi3798mv100.dtsi"
+
+/ {
+	model = "Huawei EC6108V9C";
+
+	compatible = "hisilicon,hi3798mv100-ec6108v9c",
+		     "hisilicon,hi3798mv100";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	i2c_hdmi: i2c-hdmi {
+		compatible = "i2c-gpio";
+		sda-gpios = <&gpio4 4 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpio4 5 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,sda-open-drain;
+		i2c-gpio,scl-open-drain;
+		i2c-gpio,delay-us = <2>;	/* ~100 kHz */
+		status = "disabled";
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * Media pool: the display path allocates its frame buffers
+		 * here, and so does the decoder -- both nodes point their
+		 * memory-region at this phandle. A frame buffer has to be
+		 * physically contiguous, because the channel takes one base
+		 * address (VO_G0_ADDR) and this chip has no MMU on the display
+		 * side; the decoder's dma-contig queues are single contiguous
+		 * chunks for the same reason, which is what lets a decoded
+		 * frame be scanned out without a copy. Reusable: the pages stay
+		 * in the movable pool until a media allocation claims them.
+		 *
+		 * Sizing. An allocation wants `count' contiguous pages whose
+		 * start is aligned to min(get_order(size),
+		 * CONFIG_CMA_ALIGNMENT) pages -- 1 MiB here -- so a buffer
+		 * costs its own size plus at most that much, and mixing sizes
+		 * leaves 362-566 pages unusable.
+		 *
+		 * Two independent tiers. The decoder side follows the video
+		 * size, while the console framebuffer and the user interface
+		 * follow the mode being scanned out: that is what fixes the
+		 * XRGB frame size, so an OSD over a 4K output costs a 4K frame
+		 * whatever the video is. The display side is then 3 x O (fbdev
+		 * console plus a double buffered UI). One decoder session costs
+		 * 16 capture planes -- the picture message names references
+		 * through a 16-entry table, and that is what clamps the capture
+		 * queue -- plus 20 PMV slots at the same picture size, 4
+		 * bitstream planes, one RBSP buffer and the device's message
+		 * pool:
+		 *
+		 * O = XRGB8888 frame at the output mode, C = the capture plane
+		 * at the video size (the wider of the HEVC and H.264 grids), P
+		 * = 20 PMV slots, all in pages. A session wants 3O + 16C + P +
+		 * 6376, where 6376 is 4 x 768 bitstream plus 768 RBSP plus 1536
+		 * message pool plus 1000 fragments:
+		 *
+		 *  video     C      P   16C + P        3 x O
+		 *   720p    363   1280     7088    720p:  2700
+		 *  1080p    923   2560    17328   1080p:  6075
+		 *    2K    1386   4500    26676     2K:  10800
+		 *    4K    3069  10140    59244     4K:  24300
+		 *
+		 * The mixed pairs are not symmetric any more: the display term
+		 * follows the output mode while the decoder term follows the
+		 * video. Inside the 160 MiB below sit 4K out with 720p video
+		 * (37764 pages) and 1080p out with 2K video (39127); 4K out
+		 * with 1080p video wants 48004 pages = 187 MiB at the full
+		 * depth, and 40620 pages = 158 MiB once the client queues only
+		 * 8 capture planes. 4K both ways wants 89920 pages = 351 MiB,
+		 * out of budget on a 1 GiB board. Take one O away if the
+		 * console keeps a lower mode than the UI, two if there is no
+		 * /dev/fb0 at all.
+		 *
+		 * Not priced in: a client may queue the bitstream queue up to
+		 * VB2_MAX_FRAME planes, and a second session repeats its own
+		 * capture, PMV, RBSP and bitstream terms.
+		 */
+		media_cma: media-cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0x0a000000>;
+			alignment = <0x00400000>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		network {
+			label = "green:network";
+			gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+
+		network-activity {
+			label = "red:network";
+			gpios = <&gpio2 2 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+
+		ir {
+			label = "green:ir";
+			gpios = <&gpio5 2 GPIO_ACTIVE_HIGH>;
+			panic-indicator;
+			default-state = "off";
+		};
+	};
+};
+
+&emmc_data {
+	pinctrl-single,bias-pulldown = <
+		PINCTRL_PULLDOWN(0, 1, 0, 1)
+	>;
+	pinctrl-single,slew-rate = <
+		PINCTRL_SLEW_RATE(1, 1)
+	>;
+	pinctrl-single,drive-strength = <
+		PINCTRL_DRV_STRENGTH(6, 7)
+	>;
+};
+
+&emmc_detect {
+	pinctrl-single,bias-pulldown = <
+		PINCTRL_PULLDOWN(0, 1, 0, 1)
+	>;
+	pinctrl-single,slew-rate = <
+		PINCTRL_SLEW_RATE(1, 1)
+	>;
+	pinctrl-single,drive-strength = <
+		PINCTRL_DRV_STRENGTH(3, 3)
+	>;
+};
+
+&emmc_ccmd {
+	pinctrl-single,bias-pullup = <
+		PINCTRL_PULLUP(0, 1, 0, 1)
+	>;
+	pinctrl-single,slew-rate = <
+		PINCTRL_SLEW_RATE(1, 1)
+	>;
+	pinctrl-single,drive-strength = <
+		PINCTRL_DRV_STRENGTH(6, 7)
+	>;
+};
+
+&emmc_cclk_out {
+	pinctrl-single,bias-pulldown = <
+		PINCTRL_PULLDOWN(0, 1, 0, 1)
+	>;
+	pinctrl-single,slew-rate = <
+		PINCTRL_SLEW_RATE(1, 1)
+	>;
+	pinctrl-single,drive-strength = <
+		PINCTRL_DRV_STRENGTH(5, 7)
+	>;
+};
+
+&emmc_rst {
+	pinctrl-single,bias-pullup = <
+		PINCTRL_PULLUP(0, 1, 0, 1)
+	>;
+	pinctrl-single,slew-rate = <
+		PINCTRL_SLEW_RATE(1, 1)
+	>;
+	pinctrl-single,drive-strength = <
+		PINCTRL_DRV_STRENGTH(3, 3)
+	>;
+};
+
+&timer1 {
+	status = "okay";
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&rng {
+	status = "okay";
+};
+
+&dmac {
+	status = "okay";
+};
+
+/* The vendor tree ships all three I2C masters enabled. */
+&i2c0 {
+	status = "okay";
+};
+
+&i2c1 {
+	status = "okay";
+};
+
+&i2c2 {
+	status = "okay";
+};
+
+&wdt0 {
+	status = "okay";
+	timeout-sec = <60>;
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio2 {
+	status = "okay";
+};
+
+&gpio4 {
+	status = "okay";
+};
+
+&gpio5 {
+	status = "okay";
+};
+
+&gpio6 {
+	status = "okay";
+};
+
+&emmc {
+	fifo-depth = <256>;
+	clock-frequency = <100000000>;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	non-removable;
+	status = "okay";
+};
+
+&eth0 {
+	status = "okay";
+};
+
+&usb2_phy1 {
+	status = "okay";
+};
+
+&usb2_phy2 {
+	status = "okay";
+};
+
+&ohci0 {
+	status = "okay";
+};
+
+&ehci0 {
+	status = "okay";
+};
+
+&ohci1 {
+	status = "okay";
+};
+
+&ehci1 {
+	status = "okay";
+};
+
+&ir {
+	status = "okay";
+};
+
+/*
+ * No ddc-i2c-bus: the EDID is read through the transmitter's own DDC master, so
+ * the HDMI block keeps the DDC pins to itself. An external bit-banging adapter
+ * on those pins shares the bus with that master, and its reads fail while the
+ * transmitter owns the pins.
+ */
+&hdmi {
+	status = "okay";
+};
+
+&vdp {
+	memory-region = <&media_cma>;
+	status = "okay";
+};
+
+&vdec {
+	memory-region = <&media_cma>;
+	status = "okay";
+};
+
+&gpu {
+	status = "okay";
+};
+
+&aiao {
+	status = "okay";
+};
+
+/ {
+	sound {
+		compatible = "hisilicon,hi3798mv100-aiao-card";
+		model = "hi3798mv100-hdmi";
+
+		playback {
+			cpu {
+				sound-dai = <&aiao 0>;
+			};
+			codec {
+				sound-dai = <&hdmi>;
+			};
+		};
+
+		capture {
+			cpu {
+				sound-dai = <&aiao 1>;
+			};
+		};
+	};
+};
