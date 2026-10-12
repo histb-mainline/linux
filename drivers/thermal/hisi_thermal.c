@@ -18,6 +18,8 @@
 #include <linux/io.h>
 #include <linux/thermal.h>
 
+#include "thermal_hwmon.h"
+
 #define HI6220_TEMP0_LAG			(0x0)
 #define HI6220_TEMP0_TH				(0x4)
 #define HI6220_TEMP0_RST_TH			(0x8)
@@ -54,6 +56,19 @@
 #define HI3660_G3D_SENSOR		2
 #define HI3660_MODEM_SENSOR		3
 
+/*
+ * Hi3798MV100 (and the older Hi37xx "V100" family) tsensor, which sits in
+ * the PMC block. Writing the start value to the control register kicks off a
+ * conversion; the result is eight 8-bit ADC samples packed into two 32-bit
+ * value registers.
+ *
+ *	temp(mC) = (avg * 180000) / 255 - 40000
+ */
+#define HI3798MV100_TEMP_CTRL		0x00
+#define HI3798MV100_TEMP_CTRL_START	0x07200000
+#define HI3798MV100_TEMP_VALUE0		0x08
+#define HI3798MV100_TEMP_VALUE1		0x0c
+
 struct hisi_thermal_data;
 
 struct hisi_thermal_sensor {
@@ -62,6 +77,8 @@ struct hisi_thermal_sensor {
 	const char *irq_name;
 	uint32_t id;
 	uint32_t thres_temp;
+	int crit_temp;
+	bool crit_temp_valid;
 };
 
 struct hisi_thermal_ops {
@@ -301,6 +318,66 @@ static int hi3660_thermal_get_temp(struct hisi_thermal_sensor *sensor)
 	return hi3660_thermal_get_temperature(data->regs, sensor->id);
 }
 
+/*
+ * The vendor applies one more correction on top of this, a per-chip trim
+ * read from OTP word 0x258: bits[21:18] are a magnitude of 0..15 degrees
+ * and bit 22 is its sign.  This driver does not read OTP yet, so wherever a
+ * trim is programmed the absolute temperature is off by that much; the
+ * EC6108V9C used for testing has a zero trim word.
+ */
+static int hi3798mv100_thermal_get_temp(struct hisi_thermal_sensor *sensor)
+{
+	struct hisi_thermal_data *data = sensor->data;
+	u32 sum = 0, val;
+	int i;
+
+	writel(HI3798MV100_TEMP_CTRL_START,
+	       data->regs + HI3798MV100_TEMP_CTRL);
+	usleep_range(50, 100);
+
+	val = readl(data->regs + HI3798MV100_TEMP_VALUE0);
+	for (i = 0; i < 4; i++)
+		sum += (val >> (8 * i)) & 0xff;
+
+	val = readl(data->regs + HI3798MV100_TEMP_VALUE1);
+	for (i = 0; i < 4; i++)
+		sum += (val >> (8 * i)) & 0xff;
+
+	sum /= 8;
+
+	return (sum * 180000) / 255 - 40000;
+}
+
+static int hi3798mv100_thermal_enable_sensor(struct hisi_thermal_sensor *sensor)
+{
+	struct hisi_thermal_data *data = sensor->data;
+
+	writel(HI3798MV100_TEMP_CTRL_START,
+	       data->regs + HI3798MV100_TEMP_CTRL);
+
+	return 0;
+}
+
+static int hi3798mv100_thermal_disable_sensor(struct hisi_thermal_sensor *sensor)
+{
+	return 0;
+}
+
+static int hi3798mv100_thermal_probe(struct hisi_thermal_data *data)
+{
+	struct device *dev = &data->pdev->dev;
+
+	data->sensor = devm_kzalloc(dev, sizeof(*data->sensor), GFP_KERNEL);
+	if (!data->sensor)
+		return -ENOMEM;
+
+	data->nr_sensors = 1;
+	data->sensor[0].id = 0;
+	data->sensor[0].data = data;
+
+	return 0;
+}
+
 static int hi6220_thermal_disable_sensor(struct hisi_thermal_sensor *sensor)
 {
 	struct hisi_thermal_data *data = sensor->data;
@@ -434,8 +511,22 @@ static int hisi_thermal_get_temp(struct thermal_zone_device *tz, int *temp)
 	return 0;
 }
 
+static int hisi_thermal_get_crit_temp(struct thermal_zone_device *tz,
+				      int *temp)
+{
+	struct hisi_thermal_sensor *sensor = thermal_zone_device_priv(tz);
+
+	if (!sensor->crit_temp_valid)
+		return -EINVAL;
+
+	*temp = sensor->crit_temp;
+
+	return 0;
+}
+
 static const struct thermal_zone_device_ops hisi_of_thermal_ops = {
 	.get_temp = hisi_thermal_get_temp,
+	.get_crit_temp = hisi_thermal_get_crit_temp,
 };
 
 static irqreturn_t hisi_thermal_alarm_irq_thread(int irq, void *dev)
@@ -477,6 +568,19 @@ static int hisi_trip_walk_cb(struct thermal_trip *trip, void *arg)
 	return 1;
 }
 
+static int hisi_crit_trip_walk_cb(struct thermal_trip *trip, void *arg)
+{
+	struct hisi_thermal_sensor *sensor = arg;
+
+	if (trip->type != THERMAL_TRIP_CRITICAL)
+		return 0;
+
+	sensor->crit_temp = trip->temperature;
+	sensor->crit_temp_valid = true;
+	/* Return nonzero to terminate the search. */
+	return 1;
+}
+
 static int hisi_thermal_register_sensor(struct platform_device *pdev,
 					struct hisi_thermal_sensor *sensor)
 {
@@ -494,6 +598,10 @@ static int hisi_thermal_register_sensor(struct platform_device *pdev,
 	}
 
 	thermal_zone_for_each_trip(sensor->tzd, hisi_trip_walk_cb, sensor);
+	thermal_zone_for_each_trip(sensor->tzd, hisi_crit_trip_walk_cb, sensor);
+
+	/* OF zones default to no_hwmon, so register the sysfs bridge here. */
+	devm_thermal_add_hwmon_sysfs(&pdev->dev, sensor->tzd);
 
 	return 0;
 }
@@ -514,6 +622,13 @@ static const struct hisi_thermal_ops hi3660_ops = {
 	.probe		= hi3660_thermal_probe,
 };
 
+static const struct hisi_thermal_ops hi3798mv100_ops = {
+	.get_temp	= hi3798mv100_thermal_get_temp,
+	.enable_sensor	= hi3798mv100_thermal_enable_sensor,
+	.disable_sensor	= hi3798mv100_thermal_disable_sensor,
+	.probe		= hi3798mv100_thermal_probe,
+};
+
 static const struct of_device_id of_hisi_thermal_match[] = {
 	{
 		.compatible = "hisilicon,tsensor",
@@ -522,6 +637,10 @@ static const struct of_device_id of_hisi_thermal_match[] = {
 	{
 		.compatible = "hisilicon,hi3660-tsensor",
 		.data = &hi3660_ops,
+	},
+	{
+		.compatible = "hisilicon,hi3798mv100-tsensor",
+		.data = &hi3798mv100_ops,
 	},
 	{ /* end */ }
 };
@@ -570,16 +689,26 @@ static int hisi_thermal_probe(struct platform_device *pdev)
 			return ret;
 		}
 
-		ret = platform_get_irq(pdev, 0);
+		ret = platform_get_irq_optional(pdev, 0);
+		if (ret == -ENXIO)
+			ret = 0;
 		if (ret < 0)
 			return ret;
 
-		ret = devm_request_threaded_irq(dev, ret, NULL,
-						hisi_thermal_alarm_irq_thread,
-						IRQF_ONESHOT, sensor->irq_name,
-						sensor);
-		if (ret < 0)
-			return ret;
+		/*
+		 * Only wire up an interrupt when the ops can service one: the
+		 * MV100 sensor has none and provides no handler, so a stray
+		 * 'interrupts' in the device tree must not reach the handler.
+		 */
+		if (ret > 0 && data->ops->irq_handler) {
+			ret = devm_request_threaded_irq(dev, ret, NULL,
+							hisi_thermal_alarm_irq_thread,
+							IRQF_ONESHOT,
+							sensor->irq_name,
+							sensor);
+			if (ret < 0)
+				return ret;
+		}
 
 		ret = data->ops->enable_sensor(sensor);
 		if (ret) {
