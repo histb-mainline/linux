@@ -490,6 +490,7 @@ config REGULATOR_HI6421V600
 config REGULATOR_HISI_STB
 	tristate "HiSilicon STB voltage regulator support"
 	depends on ARCH_HISI || COMPILE_TEST
+	default ARCH_HISI
 	help
 	  This driver provides support for the voltage regulators of the
 	  HiSilicon STB SoCs, including Hi3798cv200, Hi3798mv100, Hi3798mv200.
