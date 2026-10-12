@@ -263,6 +263,164 @@ static struct clk *hi3798_clk_register_hd_pix(struct device *dev, void __iomem *
 	return devm_clk_register(dev, &clk->hw);
 }
 
+/*
+ * The CPU clock: PERI_CRG18 selects one of the APLL-based dividers for the A7
+ * cluster.  No PLL is programmed here, the mux just picks a fixed divider, and
+ * the switch is glitch-free, so the rate can be changed while running from it.
+ * cpu_begin_cfg_bypass has to be set for the software switch strobe
+ * (cpu_sw_begin_cfg) to take effect; the vendor SDK strokes the same three
+ * writes in mpu_clk_init() and mpu_clk_set_sel()
+ * (msp/drv/pm/pm_v100/clock_mpu.c).
+ *
+ * The rates are the vendor's nominal labels.  Measured with the PMU cycle
+ * counter on an EC6108V9C, sel 0 actually runs at 983.04MHz and sel 1 at
+ * 750MHz, while sel 7 is exactly 600MHz; the labels for sel 0 and sel 1 round
+ * up.
+ *
+ * 1200 and 1500MHz need more than the reset vdd-cpu, so the device trees leave
+ * them out of the operating points until voltage scaling is wired up.
+ */
+#define CRG_CPU_CLK			0x48
+#define  CRG_CPU_FREQ_SEL		GENMASK(2, 0)
+#define  CRG_CPU_BEGIN_CFG_BYPASS	BIT(9)
+#define  CRG_CPU_SW_BEGIN_CFG		BIT(10)
+
+struct hi3798_cpu_clock {
+	struct clk_hw	hw;
+	void __iomem	*reg;
+};
+
+#define to_hi3798_cpu_clock(_hw) \
+	container_of(_hw, struct hi3798_cpu_clock, hw)
+
+struct hi3798_cpu_rate {
+	u32		sel;
+	unsigned long	rate;
+};
+
+static const struct hi3798_cpu_rate hi3798mv100_cpu_rates[] = {
+	{ 0, 1000000000, },	/* APLL */
+	{ 5, 1200000000, },
+	{ 3, 1500000000, },
+	{ 1,  800000000, },
+	{ 7,  600000000, },
+	{ 6,  400000000, },
+	{ 4,   24000000, },
+};
+
+static int hi3798_cpu_nearest_sel(unsigned long rate)
+{
+	unsigned long diff = ~0UL;
+	int best = 0, i;
+
+	for (i = 0; i < ARRAY_SIZE(hi3798mv100_cpu_rates); i++) {
+		unsigned long r = hi3798mv100_cpu_rates[i].rate;
+		unsigned long delta = rate > r ? rate - r : r - rate;
+
+		if (delta < diff) {
+			diff = delta;
+			best = i;
+		}
+	}
+
+	return best;
+}
+
+static unsigned long hi3798_cpu_recalc_rate(struct clk_hw *hw,
+					    unsigned long parent_rate)
+{
+	struct hi3798_cpu_clock *clk = to_hi3798_cpu_clock(hw);
+	u32 sel = FIELD_GET(CRG_CPU_FREQ_SEL, readl_relaxed(clk->reg));
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(hi3798mv100_cpu_rates); i++)
+		if (hi3798mv100_cpu_rates[i].sel == sel)
+			return hi3798mv100_cpu_rates[i].rate;
+
+	/*
+	 * Selector 2 is the one encoding the vendor never uses.  Report the
+	 * reset rate rather than zero: a zero rate makes the cpufreq core
+	 * fail to register the policy, which would take the whole cluster's
+	 * frequency scaling down with it.
+	 */
+	pr_warn_once("hi3798mv100: unexpected CPU clock selector %u, assuming %lu Hz\n",
+		     sel, hi3798mv100_cpu_rates[0].rate);
+
+	return hi3798mv100_cpu_rates[0].rate;
+}
+
+static int hi3798_cpu_determine_rate(struct clk_hw *hw,
+				     struct clk_rate_request *req)
+{
+	unsigned long diff = ~0UL;
+	int best = -1, i;
+
+	/* the closest rate that still fits the requested range */
+	for (i = 0; i < ARRAY_SIZE(hi3798mv100_cpu_rates); i++) {
+		unsigned long r = hi3798mv100_cpu_rates[i].rate;
+		unsigned long delta;
+
+		if (r < req->min_rate || r > req->max_rate)
+			continue;
+
+		delta = r > req->rate ? r - req->rate : req->rate - r;
+		if (delta < diff) {
+			diff = delta;
+			best = i;
+		}
+	}
+
+	if (best < 0)
+		return -EINVAL;
+
+	req->rate = hi3798mv100_cpu_rates[best].rate;
+
+	return 0;
+}
+
+static int hi3798_cpu_set_rate(struct clk_hw *hw, unsigned long rate,
+			       unsigned long parent_rate)
+{
+	struct hi3798_cpu_clock *clk = to_hi3798_cpu_clock(hw);
+	u32 sel = hi3798mv100_cpu_rates[hi3798_cpu_nearest_sel(rate)].sel;
+	u32 val;
+
+	val = readl_relaxed(clk->reg) | CRG_CPU_BEGIN_CFG_BYPASS;
+	writel_relaxed(val & ~CRG_CPU_SW_BEGIN_CFG, clk->reg);
+
+	val = (val & ~CRG_CPU_FREQ_SEL) | FIELD_PREP(CRG_CPU_FREQ_SEL, sel);
+	writel_relaxed(val, clk->reg);
+
+	writel_relaxed(val | CRG_CPU_SW_BEGIN_CFG, clk->reg);
+
+	return 0;
+}
+
+static const struct clk_ops hi3798_cpu_ops = {
+	.recalc_rate = hi3798_cpu_recalc_rate,
+	.determine_rate = hi3798_cpu_determine_rate,
+	.set_rate = hi3798_cpu_set_rate,
+};
+
+static struct clk *hi3798_clk_register_cpu(struct device *dev,
+					   void __iomem *base)
+{
+	struct hi3798_cpu_clock *clk;
+	struct clk_init_data init = {
+		.name = "cpu_clk",
+		.ops = &hi3798_cpu_ops,
+	};
+
+	clk = devm_kzalloc(dev, sizeof(*clk), GFP_KERNEL);
+	if (!clk)
+		return ERR_PTR(-ENOMEM);
+
+	clk->hw.init = &init;
+	clk->reg = base + CRG_CPU_CLK;
+
+	return devm_clk_register(dev, &clk->hw);
+}
+
 static u32 hi3798mv100_phase_regvals[] = { 0, 1, 2, 3, 4, 5, 6, 7 };
 static u32 hi3798mv100_phase_degrees[] = { 0, 45, 90, 135, 180, 225, 270, 315 };
 
@@ -512,7 +670,7 @@ static struct hisi_clock_data *hi3798mv100_clk_register(struct platform_device *
 {
 	struct device *dev = &pdev->dev;
 	struct hisi_clock_data *clk_data;
-	struct clk *hd_pix;
+	struct clk *hd_pix, *cpu_clk;
 	int ret;
 
 	clk_data = hisi_clk_alloc(pdev, HI3798MV100_CRG_NR_CLKS);
@@ -544,6 +702,13 @@ static struct hisi_clock_data *hi3798mv100_clk_register(struct platform_device *
 		goto err_mux;
 	}
 	clk_data->clk_data.clks[HI3798MV100_HD_PIX] = hd_pix;
+
+	cpu_clk = hi3798_clk_register_cpu(dev, clk_data->base);
+	if (IS_ERR(cpu_clk)) {
+		ret = PTR_ERR(cpu_clk);
+		goto err_mux;
+	}
+	clk_data->clk_data.clks[HI3798MV100_CPU_CLK] = cpu_clk;
 
 	ret = hisi_clk_register_gate(hi3798mv100_gate_clks,
 				     ARRAY_SIZE(hi3798mv100_gate_clks),
