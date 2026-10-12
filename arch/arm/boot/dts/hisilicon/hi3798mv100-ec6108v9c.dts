@@ -12,6 +12,23 @@
 	compatible = "hisilicon,hi3798mv100-ec6108v9c",
 		     "hisilicon,hi3798mv100";
 
+	thermal-zones {
+		soc-thermal {
+			polling-delay-passive = <250>;
+			polling-delay = <1000>;
+
+			thermal-sensors = <&tsensor>;
+
+			trips {
+				soc_crit: soc-crit {
+					temperature = <115000>;
+					hysteresis = <5000>;
+					type = "critical";
+				};
+			};
+		};
+	};
+
 	chosen {
 		stdout-path = "serial0:115200n8";
 	};

@@ -21,6 +21,12 @@
 };
 
 &soc {
+	tsensor: tsensor@8a23028 {
+		compatible = "hisilicon,hi3798mv100-tsensor";
+		reg = <0x8a23028 0x10>;
+		#thermal-sensor-cells = <0>;
+	};
+
 	eth0: ethernet@9840000 {
 		compatible = "hisilicon,hisi-femac-v2";
 		reg = <0x9840000 0x1000>, <0x9841300 0x200>;
