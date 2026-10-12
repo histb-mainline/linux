@@ -11,12 +11,25 @@ maintainers:
 
 allOf:
   - $ref: thermal-sensor.yaml
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - hisilicon,hi3798mv100-tsensor
+    then:
+      properties:
+        interrupts: false
+    else:
+      required:
+        - interrupts
 
 properties:
   compatible:
     enum:
       - hisilicon,tsensor
       - hisilicon,hi3660-tsensor
+      - hisilicon,hi3798mv100-tsensor
 
   reg:
     maxItems: 1
@@ -32,12 +45,11 @@ properties:
     maxItems: 1
 
   '#thermal-sensor-cells':
-    const: 1
+    enum: [0, 1]
 
 required:
   - compatible
   - reg
-  - interrupts
   - '#thermal-sensor-cells'
 
 unevaluatedProperties: false
@@ -54,4 +66,11 @@ examples:
         clocks = <&sys_ctrl HI6220_TSENSOR_CLK>;
         clock-names = "thermal_clk";
         #thermal-sensor-cells = <1>;
+    };
+
+  - |
+    tsensor@8a23028 {
+        compatible = "hisilicon,hi3798mv100-tsensor";
+        reg = <0x8a23028 0x10>;
+        #thermal-sensor-cells = <0>;
     };
