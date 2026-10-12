@@ -18,24 +18,59 @@
 			compatible = "arm,cortex-a7";
 			device_type = "cpu";
 			reg = <0>;
+			clocks = <&crg HI3798MV100_CPU_CLK>;
+			operating-points-v2 = <&cpu_opp_table>;
+			cpu-supply = <&vddcpu>;
+			#cooling-cells = <2>;
 		};
 
 		cpu1: cpu@1 {
 			compatible = "arm,cortex-a7";
 			device_type = "cpu";
 			reg = <1>;
+			operating-points-v2 = <&cpu_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu2: cpu@2 {
 			compatible = "arm,cortex-a7";
 			device_type = "cpu";
 			reg = <2>;
+			operating-points-v2 = <&cpu_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu3: cpu@3 {
 			compatible = "arm,cortex-a7";
 			device_type = "cpu";
 			reg = <3>;
+			operating-points-v2 = <&cpu_opp_table>;
+			#cooling-cells = <2>;
+		};
+	};
+
+	/*
+	 * The cluster shares one clock and one rail, so all CPUs use a single
+	 * shared table.  The voltages are the vendor's per-OPP upper bounds
+	 * (msp/drv/include/hi_drv_pmoc.h: HI_VDD_MPU_OPP2_UV and HI_VDD_MPU_OPP4_UV)
+	 * rather than the AVS minimum, which is the conservative choice here
+	 * since this port does not implement the HPM/AVS hardware.
+	 *
+	 * The vendor's 1200 and 1500MHz points need 1420 and 1495mV and are left
+	 * out for now: this board has no heatsink and has no use for them.
+	 */
+	cpu_opp_table: opp-table {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+			opp-microvolt = <1150000>;
+		};
+
+		opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			opp-microvolt = <1300000>;
 		};
 	};
 
