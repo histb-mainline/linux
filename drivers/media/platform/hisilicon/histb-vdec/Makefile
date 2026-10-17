@@ -5,5 +5,6 @@ histb-vdec-y += histb_vdec_hw.o
 histb-vdec-y += histb_vdec_h264.o
 histb-vdec-y += histb_vdec_hevc.o
 histb-vdec-y += histb_vdec_mpeg2.o
+histb-vdec-y += histb_vdec_mpeg4.o
 
 obj-$(CONFIG_VIDEO_HISTB_VDEC) += histb-vdec.o
