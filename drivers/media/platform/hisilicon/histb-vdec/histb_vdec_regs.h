@@ -1,9 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Register definitions for the HiSilicon Hi3798MV100 video decoder (VDH,
  * HiVDHV300R001 generation). Derived from the vendor firmware's register
- * description headers and cross-checked against the firmware's own assembly
- * and the hardware.
+ * description headers and cross-checked against the firmware's own assembly and
+ * the hardware.
  */
 #ifndef HISTB_VDEC_REGS_H
 #define HISTB_VDEC_REGS_H
@@ -12,10 +12,10 @@
 
 /*
  * VDM register window, 4 KiB plus the SED block at 0xF8C30000. Offsets are
- * register indices as used by the vendor firmware. The syntax-error
- * statistics at 0x1000 belong to the same hardware block (the firmware reads
- * them as its syntax-error record pair), so the mapping covers them while the
- * luminance histogram past 0x8100 stays outside.
+ * register indices as used by the vendor firmware. The syntax-error statistics
+ * at 0x1000 belong to the same hardware block (the firmware reads them as its
+ * syntax-error record pair), so the mapping covers them while the luminance
+ * histogram past 0x8100 stays outside.
  */
 #define VDM_START			0x000	/* doorbell: write 0, 1, 0 */
 #define VDM_REPAIR			0x004	/* RealVideo repair engine start */
@@ -54,8 +54,8 @@
 #define VDM_RPT_CNT			0x034
 #define VDM_TO(n)			(0x038 + 4 * (n)) /* 8 module timeouts */
 
-/* The firmware programs the seven module timeout windows 0x3c..0x54 with
- * one common value and never touches VDM_RPT_CNT / VDM_TO(0).
+/* The firmware programs the seven module timeout windows 0x3c..0x54 with one
+ * common value and never touches VDM_RPT_CNT / VDM_TO(0).
  */
 #define VDM_TIMEOUT_MOD			0x00300c03
 #define VDM_TIMEOUT_HEVC			0x00300003
@@ -82,6 +82,20 @@
 #define VDM_WR_REQ_PER_PIC		0x0c0
 #define VDM_MB0_QP_IN_CURR_PIC		0x0d0
 #define VDM_SWITCH_ROUNDING		0x0d4
+#define VDM_AXI_TEST_ST			0x0e0
+#define VDM_AXI_TEST_STA		0x0f0
+
+/*
+ * Syntax error detection status. These live past the first 4 KiB of the block
+ * and are where the vendor firmware reads its syntax-error record pair from
+ * (the non-low-delay path looks only at 0x1000 and 0x1014). The block runs to
+ * the end of the mapped window, and the firmware's low-delay path walks it as
+ * 16-byte per-slice records (status at +0, record end at +8, slice index
+ * 1..200), so the dump covers all of it.
+ */
+#define VDM_SED_STA			0x1000
+#define VDM_SED_END0			0x1014
+#define VDM_SED_LAST			0x10f0
 
 /*
  * VDEC global registers inside the SCD block at 0xF8C3C000. The decoder data
@@ -91,17 +105,17 @@
 #define SCD_AVS_FLAG			0x000
 #define SCD_EMAR_ID			0x004
 /*
- * VDH select/reset.  The vendor firmware's decoder start path writes 1 here
+ * VDH select/reset. The vendor firmware's decoder start path writes 1 here
  * before every picture; no live path in this driver touches the offset, so it
  * is only ever reachable through the MPEG-2 A/B instrument.
  */
 #define SCD_VDH_SELRST			0x008
 #define SCD_VDH_CK_GT			0x00c
 
-/* CRG window offsets: gate/reset/clk_sel of the VDH and its ack window.
- * The soft-reset request is bit 5 of CRG30 and the reset acknowledge is
- * bit 1 of CRG93, matching the CRG register descriptions the vendor
- * firmware programs against.
+/* CRG window offsets: gate/reset/clk_sel of the VDH and its ack window. The
+ * soft-reset request is bit 5 of CRG30 and the reset acknowledge is bit 1 of
+ * CRG93, matching the CRG register descriptions the vendor firmware programs
+ * against.
  */
 #define VDH_CRG30				0x078
 #define VDH_CRG93				0x174
@@ -111,9 +125,9 @@
 #define VDH_CK_GT_OTHER			0x3
 
 /*
- * Firmware channel type codes (dispatch table); the VDM_CFG1_VID_STD
- * register field carries its own per-protocol codes, which each codec
- * source defines separately (they disagree for HEVC and VP8).
+ * Firmware channel type codes (dispatch table); the VDM_CFG1_VID_STD register
+ * field carries its own per-protocol codes, which each codec source defines
+ * separately (they disagree for HEVC and VP8).
  */
 enum histb_vdec_vidstd {
 	HISTB_VIDSTD_H264	= 0,

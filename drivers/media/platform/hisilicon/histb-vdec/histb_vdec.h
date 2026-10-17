@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * HiSilicon Hi3798MV100 (VDH HiVDHV300R001) stateless video decoder driver.
  *
@@ -6,8 +6,8 @@
  * per-frame parsing results through V4L2 stateless controls, and the driver
  * packs them into the hardware's downstream message pool, programs the VDM
  * registers and rings the doorbell. Frame storage uses a table+index model:
- * capture buffers are registered by index and referenced by id from the
- * message pool. Output frames are 16x16-tiled NV21, exposed here as
+ * capture buffers are registered by index and referenced by id from the message
+ * pool. Output frames are 16x16-tiled NV21, exposed here as
  * V4L2_PIX_FMT_NV21_16L16.
  *
  * The register layouts, message slot encodings and buffer geometries recorded
@@ -26,6 +26,9 @@
 #include <media/videobuf2-v4l2.h>
 
 #include "histb_vdec_regs.h"
+
+struct dentry;
+struct regmap;
 
 #define HISTB_VDEC_NAME			"histb-vdec"
 
@@ -51,16 +54,16 @@
 #define HISTB_VDEC_CABAC_MN_H264_SIZE	5120
 #define HISTB_VDEC_CABAC_MN_HEVC_SIZE	928
 /* The tile/segment info image that picture message D55 points at, sized by the
- * reservation the vendor firmware makes for its own copy of the same area
- * (64 * 4 * 128 bytes); growing it from the 2 KB first used here changed no
- * board reading, so this is fidelity to the vendor layout rather than a fix.
+ * reservation the vendor firmware makes for its own copy of the same area (64 *
+ * 4 * 128 bytes); growing it from the 2 KB first used here changed no board
+ * reading, so this is fidelity to the vendor layout rather than a fix.
  */
 #define HISTB_VDEC_TILE_INFO_SIZE	(64 * 4 * 128)
 #define HISTB_VDEC_PPFD_SIZE		(64 * 4 * 800)
 
-/* Band-line scratch buffers, sized by the vendor layout: 64 * 4 * width
- * bytes each at 1920 columns. Which of these a protocol actually references
- * is fixed per protocol (see the codec sources).
+/* Band-line scratch buffers, sized by the vendor layout: 64 * 4 * width bytes
+ * each at 1920 columns. Which of these a protocol actually references is fixed
+ * per protocol (see the codec sources).
  */
 #define HISTB_VDEC_SCRATCH_SIZE		(64 * 4 * HISTB_VDEC_MAX_WIDTH)
 enum histb_vdec_scratch {
@@ -77,11 +80,11 @@ enum histb_vdec_scratch {
 };
 
 /*
- * Single downstream/upstream message pool, allocated once per device: the
- * VDM decodes one frame at a time, so the pool is owned by the device and
- * borrowed by whichever job is running. Write-combining mapping: both the
- * CPU (message producer/consumer) and the VDM DMA master access it, and the
- * vendor firmware uses uncached mappings for the same purpose.
+ * Single downstream/upstream message pool, allocated once per device: the VDM
+ * decodes one frame at a time, so the pool is owned by the device and borrowed
+ * by whichever job is running. Write-combining mapping: both the CPU (message
+ * producer/consumer) and the VDM DMA master access it, and the vendor firmware
+ * uses uncached mappings for the same purpose.
  *
  * Layout:
  *   [0]                          picture slot
@@ -101,10 +104,10 @@ struct histb_vdec_msgpool {
 };
 
 /*
- * Mirror of the luma-stride rule the vendor firmware applies to the tiled
- * write path: a stride that is already a multiple of 256 is kept, otherwise
- * round up to the next 256-byte tile column count and skip to an odd one.
- * 320 -> 768, 640 -> 768, 192 -> 256, 512 -> 512, 1920 -> 2304.
+ * Mirror of the luma-stride rule the vendor firmware applies to the tiled write
+ * path: a stride that is already a multiple of 256 is kept, otherwise round up
+ * to the next 256-byte tile column count and skip to an odd one. 320 -> 768,
+ * 640 -> 768, 192 -> 256, 512 -> 512, 1920 -> 2304.
  */
 static inline unsigned int histb_vdec_tile_stride(unsigned int width)
 {
@@ -130,11 +133,11 @@ static inline unsigned int histb_vdec_hevc_stride(unsigned int width)
 /*
  * Frame-buffer geometry of the 1D (tiled) write path, measured on the board
  * with the all-I_PCM probe and matched to the geometry the vendor firmware
- * programs for H.264. The VDM writes tiles of 256 bytes by 16 picture
- * rows: inside a band the line pitch is the tile width, VDM_YSTRIDE_1D carries
- * the pitch *between* bands, and the chroma tiles start behind the whole luma
- * band array plus a per-picture 1D area. The band count rounds up to an even
- * number because field coding always reserves a pair.
+ * programs for H.264. The VDM writes tiles of 256 bytes by 16 picture rows:
+ * inside a band the line pitch is the tile width, VDM_YSTRIDE_1D carries the
+ * pitch *between* bands, and the chroma tiles start behind the whole luma band
+ * array plus a per-picture 1D area. The band count rounds up to an even number
+ * because field coding always reserves a pair.
  */
 static inline unsigned int histb_vdec_band_bytes(unsigned int tile_stride)
 {
@@ -229,6 +232,9 @@ struct histb_vdec_dev {
 	struct histb_vdec_msgpool pool;
 	bool			job_running;
 
+	/* debugfs bring-up window, see histb_vdec_debug.c */
+	struct dentry		*dbgfs;
+	struct regmap		*crg;
 };
 
 struct histb_vdec_fmt_desc;
@@ -269,16 +275,17 @@ struct histb_vdec_fmt_desc {
 	/*
 	 * Band pitch this protocol's engine writes, and therefore the
 	 * bytesperline/sizeimage the capture queue has to advertise: the two
-	 * must be one number, or a client copying the tile array reads a sheared
-	 * frame. H.264/MPEG-2/MPEG-4 use the firmware's odd/even column rule,
-	 * HEVC a plain ALIGN(width, 256).
+	 * must be one number, or a client copying the tile array reads a
+	 * sheared frame. H.264/MPEG-2/MPEG-4 use the firmware's odd/even column
+	 * rule, HEVC a plain ALIGN(width, 256).
 	 */
 	unsigned int				(*stride)(unsigned int width);
 	/*
 	 * Height granularity of that pitch: the engine lays out whole coding
 	 * blocks, so the frame footprint is the coding grid, not the coded
 	 * height. MB protocols are 16; HEVC's largest CTB is 64 and CTB size is
-	 * only known once the SPS arrives, so its capture size is rounded for 64.
+	 * only known once the SPS arrives, so its capture size is rounded
+	 * for 64.
 	 */
 	unsigned int				grid_align;
 };
@@ -287,6 +294,7 @@ struct histb_vdec_fmt_desc {
 extern const struct histb_vdec_fmt_desc histb_vdec_h264_fmt;
 extern const struct histb_vdec_fmt_desc histb_vdec_hevc_fmt;
 extern const struct histb_vdec_fmt_desc histb_vdec_mpeg2_fmt;
+extern const struct histb_vdec_fmt_desc histb_vdec_vp8_fmt;
 extern const struct histb_vdec_fmt_desc histb_vdec_mpeg4_fmt;
 extern const struct histb_vdec_fmt_desc histb_vdec_h263_fmt;
 
@@ -304,6 +312,14 @@ void histb_vdec_hw_kick(struct histb_vdec_dev *dev,
 			enum histb_vdec_vidstd std);
 /* Program the constant tables once at probe. */
 void histb_vdec_hw_init_tables(struct histb_vdec_dev *dev);
+/* debugfs bring-up counters over the table area, see histb_vdec_debug.c. */
+unsigned int histb_vdec_hw_check_tables(const struct histb_vdec_dev *dev,
+					unsigned int *first_bad);
+unsigned int histb_vdec_hw_scratch_usage(const struct histb_vdec_dev *dev,
+					 unsigned int idx, unsigned int *first);
+
+/* debug.c: register and message-pool dump window for bring-up measurements. */
+void histb_vdec_debugfs_init(struct histb_vdec_dev *dev);
 
 static inline void vdm_write(struct histb_vdec_dev *dev, unsigned int reg,
 			     u32 val)
@@ -316,12 +332,12 @@ static inline u32 vdm_read(struct histb_vdec_dev *dev, unsigned int reg)
 	return readl(dev->vdm + reg);
 }
 
-/* Convert an OUTPUT plane into the vendor's bitstream segment descriptor:
- * a (byte offset from the aligned stream base, bit offset, bit length)
- * triple. The hardware fetches on 16-byte granularity, so the bits inside the
- * granule join the bit offset, which is what the vendor firmware programs for
- * every segment it hands over. data_addr must be the address of the
- * segment's first bit, not of the plane start.
+/* Convert an OUTPUT plane into the vendor's bitstream segment descriptor: a
+ * (byte offset from the aligned stream base, bit offset, bit length) triple.
+ * The hardware fetches on 16-byte granularity, so the bits inside the granule
+ * join the bit offset, which is what the vendor firmware programs for every
+ * segment it hands over. data_addr must be the address of the segment's first
+ * bit, not of the plane start.
  */
 static inline void histb_vdec_seg_pack(u32 *words, dma_addr_t stream_base,
 				       dma_addr_t data_addr,
@@ -340,12 +356,12 @@ static inline void histb_vdec_seg_pack(u32 *words, dma_addr_t stream_base,
  * backwards: whole zero bytes, then the zeros below the lowest set bit of the
  * last non-zero byte (the stream is MSB-first, so the tail of the last byte is
  * the last thing written). This is the same scan the vendor firmware runs over
- * a segment before handing it to the engine; the '1' stop bit above those
- * zeros belongs to the rbsp trailing too, so callers add one.
- * The VDM counts every bit of a segment as macroblock layer, so a length that
- * still covers the padding makes it report surplus bits at the end of the
- * segment (measured on the board: one bit of padding in an interior slice is
- * enough to set the error flag).
+ * a segment before handing it to the engine; the '1' stop bit above those zeros
+ * belongs to the rbsp trailing too, so callers add one. The VDM counts every
+ * bit of a segment as macroblock layer, so a length that still covers the
+ * padding makes it report surplus bits at the end of the segment (measured on
+ * the board: one bit of padding in an interior slice is enough to set the error
+ * flag).
  */
 static inline u32 histb_vdec_trail_zero_bits(const u8 *va, u32 end_bit)
 {
@@ -377,9 +393,9 @@ static inline u32 histb_vdec_trail_zero_bits(const u8 *va, u32 end_bit)
  * Layout of the per-protocol table area, as offsets from
  * histb_vdec_msgpool::table_off. The CABAC M/N tables are constant and are
  * programmed once at probe, the tile info image is zeroed there because no
- * accepted picture uses it, and the remaining areas are filled per frame by
- * the message assembly code. The scratch blocks follow in
- * enum histb_vdec_scratch order, HISTB_VDEC_SCRATCH_SIZE bytes each.
+ * accepted picture uses it, and the remaining areas are filled per frame by the
+ * message assembly code. The scratch blocks follow in enum histb_vdec_scratch
+ * order, HISTB_VDEC_SCRATCH_SIZE bytes each.
  */
 #define HISTB_TABLE_OFF_CABAC_MN_H264	0
 #define HISTB_TABLE_OFF_CABAC_MN_HEVC	5120
@@ -389,5 +405,8 @@ static inline u32 histb_vdec_trail_zero_bits(const u8 *va, u32 end_bit)
 #define HISTB_TABLE_OFF_SCRATCH_BASE	286720
 #define HISTB_TABLE_OFF_SCRATCH(i)	(HISTB_TABLE_OFF_SCRATCH_BASE + \
 					 (i) * HISTB_VDEC_SCRATCH_SIZE)
+
+/* Bytes of each scratch block the debugfs usage probe inspects. */
+#define HISTB_VDEC_SCRATCH_PROBE	(16 * 1024)
 
 #endif /* HISTB_VDEC_H */

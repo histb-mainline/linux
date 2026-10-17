@@ -1,14 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * HiSilicon Hi3798MV100 (VDH HiVDHV300R001) stateless HEVC decoder.
  *
- * One job decodes one frame: the picture slot of the message pool carries
- * the frame-level state (POC, DPB address and POC tables, CABAC context
- * table pointer, tile info image, scaling lists), followed by one chained
- * slice slot per slice. Every slot word layout implemented here is derived
- * from the vendor firmware's message-assembly routines; the behaviour
- * behind each word, and the frame storage model (APC/PMV tables, tile
- * frame slots), are described next to the code that writes them.
+ * One job decodes one frame: the picture slot of the message pool carries the
+ * frame-level state (POC, DPB address and POC tables, CABAC context table
+ * pointer, tile info image, scaling lists), followed by one chained slice slot
+ * per slice. Every slot word layout implemented here is derived from the vendor
+ * firmware's message-assembly routines; the behaviour behind each word, and the
+ * frame storage model (APC/PMV tables, tile frame slots), are described next to
+ * the code that writes them.
  *
  * Hardware facts worth keeping next to the code:
  *
@@ -31,42 +31,107 @@
 #include "histb_vdec.h"
 
 /*
+ * Same-boot A/B instrument for the HEVC message and register shape, in the
+ * mould of histb_vdec_mpeg2_ab. Each bit turns on one field that the vendor's
+ * HEVC HAL and this driver's already byte-exact H.264 and MPEG-2 paths
+ * (histb_vdec_h264.c, histb_vdec_mpeg2.c) both agree on, while the HEVC branch
+ * here has so far written something else:
+ *
+ *   BIT(0) CFG0 coef_idx_detect_en (bit24)
+ *   BIT(1) CFG0 load_qmatrix (bit30)
+ *   BIT(2) CFG1 fst_slc_grp (bit14)
+ *   BIT(4) CFG1 dblk_1d_en (bit29)
+ * BIT(6) declare the slice segment with its rbsp_trailing_bits still inside the
+ * length. The default trims them (see histb_hevc_assemble_slice()); with
+ *          this bit the chains lose frames, counted per stream on the board:
+ *          r2 5/12, bs1 10/12, 512x240 0/12 byte-exact frames, and a job that
+ *          follows one of another resolution loses its first CTB-row columns
+ *          too.
+ *   BIT(7) leave the post-filter scratch address and length clear, which is
+ *          what the vendor programs for HEVC
+ *   BIT(8) clear CFG1 bits13:4 (the DDR stride field): the vendor's HEVC
+ *          CFG1 starts from the constant 13 and never fills them, unlike
+ *          the H.264 and MPEG-2 paths
+ *   BIT(9) write VDM+0x98 (PRC_CACHE_TYPE) = 2, which the vendor programs
+ *          for HEVC only
+ *  BIT(10) the HEVC timeout constant 0x00300003 instead of the 0x00300c03
+ *          the other codecs use, which is what the vendor sets for HEVC
+ *  BIT(11) CFG1 max_slcgrp_num = 3 (bits27:16), the constant the vendor's HEVC
+ *          CFG1 carries; no effect observed on the 256x256 and 320x240 streams
+ *          decoded on the board, so the field stays arm-only.
+ *  BIT(12) leave the seven pipeline timeout windows at their reset values: the
+ *          frame-by-frame counts then match the default arm exactly, and that
+ *          equivalence is what refuted the per-stage-timeout reading of the
+ *          engine's failure mode.
+ *  BIT(13) trim only the zero padding of rbsp_trailing_bits and keep its stop
+ *          bit: one more declared bit than the default. Pixels follow the last
+ * bit exactly (r2 0/12), so this is only a bracket for the measurement.
+ *  BIT(14) after the trim, round the declared length up to the next byte
+ *          boundary: also costs frames (w384 363/384), same reason.
+ *          Only the exact trim decodes every chain, which is why it is the
+ *          default; every variant above costs frames on the same streams, so
+ *          the measured cost sits in the declared length, not in the trailing
+ *          stop bit.
+ *  BIT(15) pad the CTB grid by one row without touching the programmed luma
+ *          height (the single-CTB-row bottom-line probe in
+ *          histb_vdec_hevc_run). It flushes the missing bottom lines, but the
+ *          deblocking picture-bottom follows the grid, so the last row is not
+ *          what a conformant decoder produces - measurement scaffolding only,
+ *          never a default.
+ *  BIT(16) lift the tile refusal and put the raster-scan address into the
+ *          slice words that carry one (D8/D9/D43), keeping D10/D44 in the
+ *          tile-scan order - the split the vendor applies through its
+ *          tile-scan-to-raster map when tiles are enabled. No tiled grid
+ *          shape decoded a full frame on the board, so this stays a probe;
+ *          see the refusal in histb_vdec_hevc_run.
+ *  BIT(17) with BIT(16), also write the slice's own tile address into bits
+ *          17:0 of D6 (the word the vendor ors an independent-slice address
+ *          into); the field's meaning is not pinned down, hence its own bit.
+ * The vendor also always sets CFG0 bit24 and CFG1 bits27:16 = 3 with bit29;
+ * measured here they change nothing, alone or next to the trim, so they stay
+ * arm-only (BIT(0), BIT(11), BIT(4)).
+ */
+static unsigned int histb_vdec_hevc_ab;
+module_param(histb_vdec_hevc_ab, uint, 0644);
+MODULE_PARM_DESC(histb_vdec_hevc_ab, "HEVC message A/B bits (0 = as derived)");
+
+/*
  * PMV slot geometry: 32 bytes per 16x16 macroblock row-column, 128-byte
  * aligned, floored at the 1080p image the vendor reserves even for small
  * streams. Unlike the H.264 layer the pool is not fixed at the largest
- * supported frame; the geometry is grown to the stream resolution on the
- * first frame that needs it (see histb_vdec_hevc_run).
+ * supported frame; the geometry is grown to the stream resolution on the first
+ * frame that needs it (see histb_vdec_hevc_run).
  */
 #define HISTB_HEVC_PMV_SLOT_SIZE_MIN		261120u
 #define HISTB_HEVC_PMV_SLOT_SIZE(w_mb, h_mb)	\
 	ALIGN((w_mb) * 32u * (h_mb), 128u)
 
 /*
- * The picture message carries a 16-entry frame address table, so capture
- * buffer indexes double as APC slots up to this limit. dpb2apc[] uses
+ * The picture message carries a 16-entry frame address table, so capture buffer
+ * indexes double as APC slots up to this limit. dpb2apc[] uses
  * HISTB_HEVC_APC_NONE for DPB entries that map to no slot.
  */
 #define HISTB_HEVC_NUM_APC_SLOTS		V4L2_HEVC_DPB_ENTRIES_NUM_MAX
 #define HISTB_HEVC_APC_NONE			0xffu
 
 /*
- * Protocol code the VDM_CFG1 VID_STD field carries for HEVC on this
- * decoder generation. It is not the 17 of the firmware dispatch table the
- * start path uses; the vendor start program writes 13.
+ * Protocol code the VDM_CFG1 VID_STD field carries for HEVC on this decoder
+ * generation. It is not the 17 of the firmware dispatch table the start path
+ * uses; the vendor start program writes 13.
  */
 #define HISTB_HEVC_VIDSTD_CODE			13
 
 /*
- * Post-filter scratch row count of the PPFD image this pool area is sized
- * for (HISTB_VDEC_PPFD_SIZE = 64 words x 800 rows); the register takes the
- * row count minus one.
+ * Post-filter scratch row count of the PPFD image this pool area is sized for
+ * (HISTB_VDEC_PPFD_SIZE = 64 words x 800 rows); the register takes the row
+ * count minus one.
  */
 #define HISTB_HEVC_PPFD_ROWS			800
 
 /*
- * Hardware slice-type codes, indexed by the V4L2 slice_type (B=0, P=1,
- * I=2): the hardware codes B as 2, P as 1 and I as 0, the same coding the
- * H.264 HAL's slice-type table produces and the h264 layer implements.
+ * Hardware slice-type codes, indexed by the V4L2 slice_type (B=0, P=1, I=2):
+ * the hardware codes B as 2, P as 1 and I as 0, the same coding the H.264 HAL's
+ * slice-type table produces and the h264 layer implements.
  */
 static u8 histb_hevc_slice_type_code(u8 slice_type)
 {
@@ -114,9 +179,9 @@ static struct histb_vdec_dev *histb_vdec_hevc_dev(struct histb_vdec_ctx *ctx)
 }
 
 /*
- * PMV slot allocator: capture buffer index -> PMV slot id. Slot ids are
- * stored +1 so that a zeroed pmv_map[] means "unallocated"; ids wrap
- * around the 20-slot pool.
+ * PMV slot allocator: capture buffer index -> PMV slot id. Slot ids are stored
+ * +1 so that a zeroed pmv_map[] means "unallocated"; ids wrap around the
+ * 20-slot pool.
  */
 static u8 histb_hevc_pmv_alloc(struct histb_vdec_ctx *ctx, unsigned int index)
 {
@@ -131,13 +196,13 @@ static u8 histb_hevc_pmv_alloc(struct histb_vdec_ctx *ctx, unsigned int index)
 }
 
 /*
- * Grow the PMV pool to @slot_size per slot. The private slots are
- * addressed independently of the frame table, so a new geometry
- * invalidates every allocated slot id and resets the map.
+ * Grow the PMV pool to @slot_size per slot. The private slots are addressed
+ * independently of the frame table, so a new geometry invalidates every
+ * allocated slot id and resets the map.
  *
- * One chunk per slot, never one slot_size * HISTB_VDEC_MAX_PMV_SLOTS block:
- * the 20-slot pool at the 1080p floor is 5.0 MB, an order-11 request (8 MB,
- * 8 MB aligned), and on the board that request alone failed - `cma:
+ * One chunk per slot, never one slot_size * HISTB_VDEC_MAX_PMV_SLOTS block: the
+ * 20-slot pool at the 1080p floor is 5.0 MB, an order-11 request (8 MB, 8 MB
+ * aligned), and on the board that request alone failed - `cma:
  * __cma_alloc_frozen: reserved: alloc failed, req-size: 1275 pages, ret: -16`,
  * with 9.9 MB free in the 16 MB region - so every HEVC job was refused with
  * -ENOMEM before the doorbell.
@@ -167,27 +232,28 @@ static int histb_hevc_pmv_pool_grow(struct histb_vdec_ctx *ctx,
 	/*
 	 * One PMV geometry per session, as on the H.264 side: a mid-session SPS
 	 * change would free the pool while a later DPB can still name those
-	 * pictures. Restarting the queues runs ->stop() and zeroes the size,
-	 * so that is the only supported way here to move to a new geometry and
-	 * the job with a different size is refused with -EINVAL.
+	 * pictures. Restarting the queues runs ->stop() and zeroes the size, so
+	 * that is the only supported way here to move to a new geometry and the
+	 * job with a different size is refused with -EINVAL.
 	 */
 	if (hevc->pmv_slot_size) {
 		/*
 		 * A second geometry inside one session is refused rather than
-		 * rebuilt: the rebuild clears pmv_map, so a picture that a later
-		 * job still names in its DPB is handed a slot that was never
-		 * written, and the engine reads its collocated motion vectors
-		 * straight out of that memory (D23 is addressed through the same
-		 * dpb2apc[] map that histb_hevc_assemble_slice() validates). The
-		 * H.264 side can rebuild at a flush boundary because every entry
-		 * of its DPB array carries a validity flag; a HEVC entry carries
-		 * exactly one flag, V4L2_HEVC_DPB_ENTRY_LONG_TERM_REFERENCE
-		 * (include/uapi/linux/v4l2-controls.h), so that predicate cannot
-		 * be formed here. The slot size is a function of the SPS picture
-		 * alone, so a conformant client reaches a new geometry only by
-		 * restarting the queues, which runs ->stop(); measured over the
-		 * scored corpus, 111 streams each carry one distinct SPS
-		 * payload, so this refuses nothing that decodes today.
+		 * rebuilt: the rebuild clears pmv_map, so a picture that a
+		 * later job still names in its DPB is handed a slot that was
+		 * never written, and the engine reads its collocated motion
+		 * vectors straight out of that memory (D23 is addressed through
+		 * the same dpb2apc[] map that histb_hevc_assemble_slice()
+		 * validates). The H.264 side can rebuild at a flush boundary
+		 * because every entry of its DPB array carries a validity flag;
+		 * a HEVC entry carries exactly one flag,
+		 * V4L2_HEVC_DPB_ENTRY_LONG_TERM_REFERENCE
+		 * (include/uapi/linux/v4l2-controls.h), so that predicate
+		 * cannot be formed here. The slot size is a function of the SPS
+		 * picture alone, so a conformant client reaches a new geometry
+		 * only by restarting the queues, which runs ->stop(); measured
+		 * over the scored corpus, 111 streams each carry one distinct
+		 * SPS payload, so this refuses nothing that decodes today.
 		 * Accepting a mid-chain change would need a per-picture slot
 		 * table that survives the rebuild.
 		 */
@@ -217,11 +283,11 @@ static int histb_hevc_pmv_pool_grow(struct histb_vdec_ctx *ctx,
 }
 
 /*
- * Start-code scan over the OUTPUT plane. Returns the bit position of every
- * VCL slice NAL unit (nal_unit_type 0..9 and 16..23, the slice NALs the
- * message ABI can describe). A 4-byte start code matches once: the extra
- * leading zero byte never forms a 00 00 01 triple with the prefix. Returns
- * the total number of slice NALs found (may exceed @max).
+ * Start-code scan over the OUTPUT plane. Returns the bit position of every VCL
+ * slice NAL unit (nal_unit_type 0..9 and 16..23, the slice NALs the message ABI
+ * can describe). A 4-byte start code matches once: the extra leading zero byte
+ * never forms a 00 00 01 triple with the prefix. Returns the total number of
+ * slice NALs found (may exceed @max).
  */
 static unsigned int histb_hevc_find_slice_nals(const u8 *buf, u32 size,
 					       u32 *starts, unsigned int max)
@@ -247,14 +313,13 @@ static unsigned int histb_hevc_find_slice_nals(const u8 *buf, u32 size,
 }
 
 /*
- * Scaling lists, picture words D64..D319. The vendor copies a 256-word
- * image word for word; the layout this driver assumes is the linear image
- * of the V4L2 control (4x4, 8x8, 16x16, 32x32 lists and the DC
- * coefficients in struct order, zero padded). That packing is unverified
- * against the hardware: on the board the submitted matrices are not
- * consulted at all for a picture that claims them, so captures cannot
- * confirm or correct this layout; see the scaling-list refusal in
- * histb_vdec_hevc_run for the measurement.
+ * Scaling lists, picture words D64..D319. The vendor copies a 256-word image
+ * word for word; the layout this driver assumes is the linear image of the V4L2
+ * control (4x4, 8x8, 16x16, 32x32 lists and the DC coefficients in struct
+ * order, zero padded). That packing is unverified against the hardware: on the
+ * board the submitted matrices are not consulted at all for a picture that
+ * claims them, so captures cannot confirm or correct this layout; see the
+ * scaling-list refusal in histb_vdec_hevc_run for the measurement.
  */
 static void histb_hevc_pack_scaling(u32 *dst,
 				    const struct v4l2_ctrl_hevc_scaling_matrix *m)
@@ -316,16 +381,16 @@ static void histb_hevc_assemble_pic(struct histb_vdec_dev *dev,
 		 ((6u * sps->bit_depth_chroma_minus8 & 0x3f) << 16) |
 		 ((6u * sps->bit_depth_luma_minus8 & 0x3f) << 22);
 	/*
-	 * Band-line scratch addresses. The engine writes four areas here
-	 * (the top PMV row, the reconstructed band, the left PMV column and
-	 * the top deblocking row) and the vendor repeats HISTB_SCRATCH_SED_TOP
-	 * in D5/D43. Sharing one region lets the reconstructed band run through
+	 * Band-line scratch addresses. The engine writes four areas here (the
+	 * top PMV row, the reconstructed band, the left PMV column and the top
+	 * deblocking row) and the vendor repeats HISTB_SCRATCH_SED_TOP in
+	 * D5/D43. Sharing one region lets the reconstructed band run through
 	 * the table area mid-decode, so each word gets its own scratch block
-	 * the way the byte-exact H.264 path does (histb_vdec_h264.c);
-	 * measured on the board on a 320x240 intra frame, 1238 of 4800 luma
-	 * lines land where the model puts them while the areas are shared,
-	 * all 4800 once each word has its own block. D57 and D59 likewise
-	 * split into dblk_left and dblk_top.
+	 * the way the byte-exact H.264 path does (histb_vdec_h264.c); measured
+	 * on the board on a 320x240 intra frame, 1238 of 4800 luma lines land
+	 * where the model puts them while the areas are shared, all 4800 once
+	 * each word has its own block. D57 and D59 likewise split into
+	 * dblk_left and dblk_top.
 	 */
 	pic[4] = lower_32_bits(tables + HISTB_TABLE_OFF_SCRATCH(HISTB_SCRATCH_SED_TOP));
 	pic[5] = lower_32_bits(tables + HISTB_TABLE_OFF_SCRATCH(HISTB_SCRATCH_PMV_TOP));
@@ -341,8 +406,8 @@ static void histb_hevc_assemble_pic(struct histb_vdec_dev *dev,
 	pic[25] = lower_32_bits(tables + HISTB_TABLE_OFF_CABAC_MN_HEVC);
 	pic[43] = lower_32_bits(tables + HISTB_TABLE_OFF_SCRATCH(HISTB_SCRATCH_PMV_LEFT));
 	pic[54] = (run->width & 0xffff) | (run->height & 0xffff) << 16;
-	/* D55 is the tile segment info image the vendor fills, not an
-	 * alias of the reconstructed band in D7.
+	/* D55 is the tile segment info image the vendor fills, not an alias of
+	 * the reconstructed band in D7.
 	 */
 	pic[55] = lower_32_bits(tables + HISTB_TABLE_OFF_TILE_INFO);
 	pic[56] = lower_32_bits(tables + HISTB_TABLE_OFF_SCRATCH(HISTB_SCRATCH_SAO_LEFT));
@@ -420,18 +485,17 @@ static int histb_hevc_pack_weights(u32 *slot,
 	 * slot carries is 16 words per component and per list - luma at
 	 * W64..W79 (L0) and W80..W95 (L1), the first chroma component at
 	 * W128..W143 and W144..W159, the second at W160..W175 and W176..W191,
-	 * the layout the vendor's slice-message writer produces - and the
-	 * uAPI arrays the loop reads are the same length
+	 * the layout the vendor's slice-message writer produces - and the uAPI
+	 * arrays the loop reads are the same length
 	 * (V4L2_HEVC_DPB_ENTRIES_NUM_MAX = 16, v4l2-controls.h). Because the
 	 * two chroma rows are written at base + 64 and base + 96, index 16
 	 * would land in the other list's luma block, so the count is checked
-	 * instead of clamped. H.265 keeps the active list length inside the
-	 * DPB and this driver's frame table is that same 16 slots, so a
-	 * conformant stream is never refused.
-	 * TODO: the weight values themselves are unmeasured - the two weighted
-	 * B pictures scored on the board came out 6/6 byte-exact from an
-	 * encoder that submits unit weights, so only a stream with non-default
-	 * coefficients confirms the packing.
+	 * instead of clamped. H.265 keeps the active list length inside the DPB
+	 * and this driver's frame table is that same 16 slots, so a conformant
+	 * stream is never refused. TODO: the weight values themselves are
+	 * unmeasured - the two weighted B pictures scored on the board came out
+	 * 6/6 byte-exact from an encoder that submits unit weights, so only a
+	 * stream with non-default coefficients confirms the packing.
 	 */
 	if ((list1 ? slice->num_ref_idx_l1_active_minus1 :
 		     slice->num_ref_idx_l0_active_minus1) >
@@ -454,6 +518,55 @@ static int histb_hevc_pack_weights(u32 *slot,
 	return 0;
 }
 
+/*
+ * Tile-scan to raster-scan CTB address of H.265 6.5.1: walk the tile grid in
+ * tile order and index inside each tile in raster order. The vendor keeps such
+ * a map in its CPU-side context and writes the converted value into the slice
+ * message, so the address words of a tiled picture are not in the order the
+ * uAPI's slice_segment_addr uses. The grid comes from the control's
+ * column_width_minus1[]/row_height_minus1[], whose last entries close the
+ * picture; the counts are clamped so the implicit final column and row keep the
+ * array reads in bounds.
+ */
+static u32 histb_hevc_tile_to_raster(const struct v4l2_ctrl_hevc_pps *pps,
+				     unsigned int w_ctbs, unsigned int h_ctbs,
+				     u32 addr)
+{
+	unsigned int cols = min_t(unsigned int,
+				  (unsigned int)pps->num_tile_columns_minus1 + 1,
+				  ARRAY_SIZE(pps->column_width_minus1) + 1);
+	unsigned int rows = min_t(unsigned int,
+				  (unsigned int)pps->num_tile_rows_minus1 + 1,
+				  ARRAY_SIZE(pps->row_height_minus1) + 1);
+	unsigned int y0 = 0, tile_addr = addr, tr, tc;
+
+	for (tr = 0; tr < rows; tr++) {
+		unsigned int rowh = tr + 1 < rows ?
+			(unsigned int)pps->row_height_minus1[tr] + 1 :
+			h_ctbs - y0;
+		unsigned int x0 = 0;
+
+		if (!rowh)
+			return addr;
+		for (tc = 0; tc < cols; tc++) {
+			unsigned int colw = tc + 1 < cols ?
+				(unsigned int)pps->column_width_minus1[tc] + 1 :
+				w_ctbs - x0;
+			unsigned int n = colw * rowh;
+
+			if (!colw)
+				return addr;
+			if (tile_addr < n)
+				return (y0 + tile_addr / colw) * w_ctbs + x0 +
+				       tile_addr % colw;
+			tile_addr -= n;
+			x0 += colw;
+		}
+		y0 += rowh;
+	}
+	return addr;
+}
+
 static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 				     struct histb_vdec_ctx *ctx,
 				     struct histb_vdec_hevc_ctx *hevc,
@@ -470,7 +583,21 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 	unsigned int last = run->num_slices - 1;
 	unsigned int count0 = 0, count1 = 0;
 	unsigned int end_ctb, i;
-	unsigned int raster_addr = slice->slice_segment_addr;
+	/*
+	 * Under tiles_enabled the vendor does not put the uAPI's tile-scan
+	 * address into the raster-domain words: its HAL writes the
+	 * tile-scan-to-raster converted value into D8/D9/D43 and the raw
+	 * tile-scan address into D10/D44. BIT(16) makes this driver follow that
+	 * split; without it, or without tiles, the two orders coincide and the
+	 * default path is untouched.
+	 */
+	bool tiled = (pps->flags & V4L2_HEVC_PPS_FLAG_TILES_ENABLED) &&
+		     (histb_vdec_hevc_ab & BIT(16));
+	unsigned int tile_addr = slice->slice_segment_addr;
+	unsigned int raster_addr = tiled ?
+		histb_hevc_tile_to_raster(pps, run->width_ctbs,
+					  run->height_ctbs, tile_addr) :
+		tile_addr;
 	bool is_low_delay;
 	bool is_b = slice->slice_type == V4L2_HEVC_SLICE_TYPE_B;
 	bool is_p = slice->slice_type == V4L2_HEVC_SLICE_TYPE_P;
@@ -520,18 +647,19 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 		 * onto a frame slot. The engine is handed the list as 4-bit APC
 		 * slot ids (D15/D16) and reads the picture behind each id from
 		 * the 16-entry frame table in D8..D23, so an index outside the
-		 * DPB array or an entry with no capture
-		 * buffer has nothing that can be packed: the slot id would be
-		 * truncated, and the address that selects is the one the caller
-		 * prefills with the destination of this very frame, which turns
-		 * inter prediction into self prediction. Refusal is the
-		 * deliverable disposition - the capture buffer comes back with
-		 * bytesused 0. Measured on the board: this is what fires when a
-		 * client's reference indices do not resolve - it refused two frames
-		 * of a 12-frame P chain while the submitting side held a DPB that
-		 * did not match the array it handed over - and the same chain has
-		 * been decoded 12/12 byte-exact ever since the indices resolve, so
-		 * nothing that names its references correctly is lost here.
+		 * DPB array or an entry with no capture buffer has nothing that
+		 * can be packed: the slot id would be truncated, and the
+		 * address that selects is the one the caller prefills with the
+		 * destination of this very frame, which turns inter prediction
+		 * into self prediction. Refusal is the deliverable
+		 * disposition - the capture buffer comes back with bytesused 0.
+		 * Measured on the board: this is what fires when a client's
+		 * reference indices do not resolve - it refused two frames of a
+		 * 12-frame P chain while the submitting side held a DPB that
+		 * did not match the array it handed over - and the same chain
+		 * has been decoded 12/12 byte-exact ever since the indices
+		 * resolve, so nothing that names its references correctly is
+		 * lost here.
 		 */
 		if (slice->ref_idx_l0[i] >= V4L2_HEVC_DPB_ENTRIES_NUM_MAX ||
 		    run->dpb2apc[slice->ref_idx_l0[i]] == HISTB_HEVC_APC_NONE)
@@ -542,10 +670,10 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 		 * against the same frame table: a B slice's backward reference
 		 * that resolves to no capture buffer would carry the un-mapped
 		 * marker into a four-bit slot id and point prediction at the
-		 * picture being written. H.265 7.4.3 keeps both lists inside the
-		 * DPB, and the 12-frame B chains scored on the board resolve
-		 * both lists and decode 12/12 byte-exact, so this refuses
-		 * nothing that a conformant submission produces.
+		 * picture being written. H.265 7.4.3 keeps both lists inside
+		 * the DPB, and the 12-frame B chains scored on the board
+		 * resolve both lists and decode 12/12 byte-exact, so this
+		 * refuses nothing that a conformant submission produces.
 		 */
 		if (slice->ref_idx_l1[i] >= V4L2_HEVC_DPB_ENTRIES_NUM_MAX ||
 		    run->dpb2apc[slice->ref_idx_l1[i]] == HISTB_HEVC_APC_NONE)
@@ -553,8 +681,8 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 
 	/*
 	 * Collocated picture for temporal motion vector prediction: the
-	 * hardware needs its APC slot (D7) and the PMV slot address (D23).
-	 * I slices carry no reference lists, so temporal MVP has no source
+	 * hardware needs its APC slot (D7) and the PMV slot address (D23). I
+	 * slices carry no reference lists, so temporal MVP has no source
 	 * picture there and the words stay clear.
 	 */
 	if ((is_p || is_b) &&
@@ -588,11 +716,11 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 	}
 
 	/*
-	 * Slice data segment. The hardware never reads slice headers, so
-	 * the segment points behind the header bits; the vendor carries
-	 * the header size as the byte offset to the slice data. The second
-	 * segment (words D3..D5) stays clear: the frame arrives as one
-	 * contiguous OUTPUT buffer.
+	 * Slice data segment. The hardware never reads slice headers, so the
+	 * segment points behind the header bits; the vendor carries the header
+	 * size as the byte offset to the slice data. The second segment (words
+	 * D3..D5) stays clear: the frame arrives as one contiguous OUTPUT
+	 * buffer.
 	 */
 	if (slice->data_byte_offset * 8 > slice->bit_size ||
 	    nal_bit >= next_bit)
@@ -603,18 +731,18 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 	 * span. D0..D2 of the segment word are a DMA offset, a bit offset and a
 	 * bit length that the engine consumes literally, and every subtraction
 	 * below (next_bit - data_bit, payload_bits - data_bit) only works if
-	 * this ordering holds; with data_bit past the next slice's first bit the
-	 * declared length would wrap to nearly 4 GiB and the span would run past
-	 * the end of the buffer. Overshoot is not benign even without the wrap:
-	 * when the declared span ends past the last coded bit the engine still
-	 * reports completion and takes a few CTB columns from stale band state,
-	 * measured as 5 of 12, 10 of 12 and 0 of 12 byte-exact frames on three
-	 * chains, which is why this is a refusal and not a clamp. The offset is
-	 * applied in the de-escaped domain the staging produced; over 104
-	 * streams (the scored corpus plus eight purpose-built wide WPP
+	 * this ordering holds; with data_bit past the next slice's first bit
+	 * the declared length would wrap to nearly 4 GiB and the span would run
+	 * past the end of the buffer. Overshoot is not benign even without the
+	 * wrap: when the declared span ends past the last coded bit the engine
+	 * still reports completion and takes a few CTB columns from stale band
+	 * state, measured as 5 of 12, 10 of 12 and 0 of 12 byte-exact frames on
+	 * three chains, which is why this is a refusal and not a clamp. The
+	 * offset is applied in the de-escaped domain the staging produced; over
+	 * 104 streams (the scored corpus plus eight purpose-built wide WPP
 	 * pictures) no slice header contained an emulation-prevention byte, so
-	 * the two possible readings of the client's value coincide on everything
-	 * measured so far.
+	 * the two possible readings of the client's value coincide on
+	 * everything measured so far.
 	 */
 	if (data_bit >= next_bit || data_bit >= payload_bits)
 		return -EINVAL;
@@ -623,37 +751,43 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 	if (data_bit + valid_bits > payload_bits)
 		valid_bits = payload_bits - data_bit;
 	/*
-	 * The declared length stops at the last coded bit: rbsp_trailing_bits is
-	 * byte alignment, not slice data (histb_vdec_trail_zero_bits(), same as the
-	 * other codecs). Leaving it in does not only set the error flag — the
-	 * engine also decodes a few CTB columns from stale band state: with the
-	 * untrimmed length r2 reaches 5/12 byte-exact frames, bs1 10/12 and
-	 * 512x240 0/12, all 12/12 once it is trimmed. A single job can look
-	 * fine either way, which is why an early per-frame reading came
-	 * out the other way before the driver staged the RBSP without its
+	 * The declared length stops at the last coded bit: rbsp_trailing_bits
+	 * is byte alignment, not slice data (histb_vdec_trail_zero_bits(), same
+	 * as the other codecs). Leaving it in does not only set the error flag
+	 * — the engine also decodes a few CTB columns from stale band state:
+	 * with the untrimmed length r2 reaches 5/12 byte-exact frames, bs1
+	 * 10/12 and 512x240 0/12, all 12/12 once it is trimmed. A single job
+	 * can look fine either way, which is why the per-frame read on this arm
+	 * came out the other way before the driver staged the RBSP without its
 	 * emulation-prevention bytes.
 	 */
-	u32 trail = histb_vdec_trail_zero_bits(run->stream_va,
-					       data_bit + valid_bits);
+	if (!(histb_vdec_hevc_ab & BIT(6))) {
+		u32 trail = histb_vdec_trail_zero_bits(run->stream_va,
+						       data_bit + valid_bits);
 
-	trail++;
-	if (valid_bits > trail)
-		valid_bits -= trail;
+		if (!(histb_vdec_hevc_ab & BIT(13)))
+			trail++;
+		if (valid_bits > trail)
+			valid_bits -= trail;
+		if (histb_vdec_hevc_ab & BIT(14))
+			valid_bits = min_t(u32, round_up(valid_bits, 8U),
+					   next_bit - data_bit);
+	}
 	/*
 	 * Nothing is left to decode once the trailing byte-alignment bits are
 	 * trimmed, which means the client's span held rbsp_trailing_bits and no
-	 * slice_data(). A declared length of zero in D2 has not been measured on
-	 * this engine, so the driver does not hand one out: the per-slice
+	 * slice_data(). A declared length of zero in D2 has not been measured
+	 * on this engine, so the driver does not hand one out: the per-slice
 	 * up-message counts decoded CTBs against the declared length, and the
-	 * chain only advances through D63, so a slot with no syntax is the shape
-	 * that would plausibly run to the watchdog. The vendor's only construct
-	 * for "this slot carries no data" is the one-bit dummy slice it inserts
-	 * in front of a chain whose first slice starts mid-picture - an
-	 * explicit length of one bit - and that is explicit padding, not an
-	 * emptied real slice.
-	 * TODO: program one slice with D2 = 0 and read the up-message CTB
-	 * counter and the timeout counter; if the engine skips such a slot and
-	 * still reports the picture done, this refusal can become a clamp.
+	 * chain only advances through D63, so a slot with no syntax is the
+	 * shape that would plausibly run to the watchdog. The vendor's only
+	 * construct for "this slot carries no data" is the one-bit dummy slice
+	 * it inserts in front of a chain whose first slice starts mid-picture -
+	 * an explicit length of one bit - and that is explicit padding, not an
+	 * emptied real slice. TODO: program one slice with D2 = 0 and read the
+	 * up-message CTB counter and the timeout counter; if the engine skips
+	 * such a slot and still reports the picture done, this refusal can
+	 * become a clamp.
 	 */
 	if (!valid_bits)
 		return -EINVAL;
@@ -668,8 +802,8 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 	/* SliceQpY of the coded slice, wrapped to the hardware 6-bit field */
 	qp = (26 + pps->init_qp_minus26 + slice->slice_qp_delta) & 63;
 
-	/* IsLowDelay (D6[27]): every reference POC earlier than this
-	 * picture's, the vendor derivation of the flag.
+	/* IsLowDelay (D6[27]): every reference POC earlier than this picture's,
+	 * the vendor derivation of the flag.
 	 */
 	is_low_delay = true;
 	for (i = 0; i < count0 + count1; i++) {
@@ -689,6 +823,17 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 		  (is_low_delay ? BIT(27) : 0) |
 		  ((slice->flags & V4L2_HEVC_SLICE_PARAMS_FLAG_DEPENDENT_SLICE_SEGMENT) ?
 		   BIT(26) : 0);
+	/*
+	 * The vendor additionally ors a per-slice address into bits 17:0 of
+	 * this word. Which field of its slice-parameter struct that value is
+	 * has not been pinned down, so BIT(17) writes it as an arm of its own
+	 * rather than folding it into the BIT(16) address-domain split.
+	 */
+	if ((histb_vdec_hevc_ab & BIT(17)) &&
+	    (pps->flags & V4L2_HEVC_PPS_FLAG_TILES_ENABLED) &&
+	    !(slice->flags &
+	      V4L2_HEVC_SLICE_PARAMS_FLAG_DEPENDENT_SLICE_SEGMENT))
+		slot[6] |= tile_addr & GENMASK(17, 0);
 	slot[7] = histb_hevc_slice_type_code(slice->slice_type) |
 		  (count0 << 2) | (count1 << 8) |
 		  ((slice->flags & V4L2_HEVC_SLICE_PARAMS_FLAG_MVD_L1_ZERO) ?
@@ -702,12 +847,12 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 		   BIT(27) : 0);
 	if (col_dpb >= 0) {
 		/*
-		 * The PMV pool is keyed by capture buffer index, which is also the
-		 * APC slot the current frame's own motion vectors went to
-		 * (histb_hevc_pmv_alloc(ctx, dst->vb2_buf.index) in the run path,
-		 * and the same indirection through dpb2apc in
-		 * histb_vdec_h264.c's collocated word). A raw dpb index here hands
-		 * the engine another picture's motion vectors.
+		 * The PMV pool is keyed by capture buffer index, which is also
+		 * the APC slot the current frame's own motion vectors went to
+		 * (histb_hevc_pmv_alloc(ctx, dst->vb2_buf.index) in the run
+		 * path, and the same indirection through dpb2apc in
+		 * histb_vdec_h264.c's collocated word). A raw dpb index here
+		 * hands the engine another picture's motion vectors.
 		 */
 		u8 col_pmv = histb_hevc_pmv_alloc(ctx, run->dpb2apc[col_dpb]);
 
@@ -722,7 +867,7 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 	slot[8] = raster_addr;
 	slot[9] = ((raster_addr / run->width_ctbs) << 16) |
 		  (raster_addr % run->width_ctbs);
-	slot[10] = raster_addr;
+	slot[10] = tile_addr;
 	slot[11] = (((u32)slice->slice_cb_qp_offset & 31) << 8) |
 		   ((u32)slice->slice_cr_qp_offset & 31);
 	slot[12] = (lf_across ? BIT(0) : 0) |
@@ -745,8 +890,8 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 			slot[14] |= BIT(i);
 
 	/*
-	 * Reference lists as 4-bit APC slot ids, eight entries per word:
-	 * list 0 at D15/D16, list 1 at D17/D18.
+	 * Reference lists as 4-bit APC slot ids, eight entries per word: list 0
+	 * at D15/D16, list 1 at D17/D18.
 	 */
 	for (i = 0; i < count0; i++)
 		slot[15 + (i >> 3)] |= (u32)run->dpb2apc[slice->ref_idx_l0[i]] <<
@@ -759,15 +904,17 @@ static int histb_hevc_assemble_slice(struct histb_vdec_dev *dev,
 	slot[24] = 0x400a | ((6u * sps->bit_depth_luma_minus8) >> 1) << 8;
 
 	/*
-	 * Slice chain words. The CTB range of the slice ends where the
-	 * next slice begins (minus one, vendor arithmetic); the last slice
-	 * ends at the last CTB of the picture. D63 links to the next slot,
-	 * the tail terminates at zero, and a stateless driver refuses
-	 * chains longer than the message pool holds.
+	 * Slice chain words. The CTB range of the slice ends where the next
+	 * slice begins (minus one, vendor arithmetic); the last slice ends at
+	 * the last CTB of the picture. D63 links to the next slot, the tail
+	 * terminates at zero, and a stateless driver refuses chains longer than
+	 * the message pool holds.
 	 */
 	end_ctb = index < last ? run->slices[index + 1].slice_segment_addr - 1 :
 		  run->ctu_count - 1;
-	slot[43] = end_ctb;
+	slot[43] = tiled ? histb_hevc_tile_to_raster(pps, run->width_ctbs,
+						    run->height_ctbs, end_ctb) :
+			  end_ctb;
 	/* D44 is the tile-scan version of the same end; the vendor converts
 	 * only the raster word.
 	 */
@@ -802,6 +949,19 @@ static void histb_hevc_program_regs(struct histb_vdec_dev *dev,
 	u32 cfg1 = FIELD_PREP(VDM_CFG1_VID_STD, HISTB_HEVC_VIDSTD_CODE) |
 		   FIELD_PREP(VDM_CFG1_DDR_STRIDE, run->tile_stride >> 6);
 
+	if (histb_vdec_hevc_ab & BIT(0))
+		cfg0 |= VDM_CFG0_COEFIDX_DETECT;
+	if (histb_vdec_hevc_ab & BIT(1))
+		cfg0 |= VDM_CFG0_LD_QMATRIX;
+	if (histb_vdec_hevc_ab & BIT(2))
+		cfg1 |= VDM_CFG1_FST_SLC_GRP;
+	if (histb_vdec_hevc_ab & BIT(11))
+		cfg1 |= FIELD_PREP(VDM_CFG1_MAX_SLCGRP_NUM, 3);
+	if (histb_vdec_hevc_ab & BIT(4))
+		cfg1 |= VDM_CFG1_DBLK_1D_EN;
+	if (histb_vdec_hevc_ab & BIT(8))
+		cfg1 &= ~VDM_CFG1_DDR_STRIDE;
+
 	/* decoded CTU budget: the field counts CTUs minus one */
 	vdm_write(dev, VDM_CFG0, cfg0);
 	vdm_write(dev, VDM_CFG1, cfg1);
@@ -812,17 +972,20 @@ static void histb_hevc_program_regs(struct histb_vdec_dev *dev,
 	vdm_write(dev, VDM_STREAM_BASE, lower_32_bits(run->src_dma & ~15u));
 
 	/* one timeout per pipeline stage, windows 0x3c..0x54 only */
-	for (i = 1; i <= 7; i++)
-		vdm_write(dev, VDM_TO(i), VDM_TIMEOUT_MOD);
+	for (i = 1; i <= 7 && !(histb_vdec_hevc_ab & BIT(12)); i++)
+		vdm_write(dev, VDM_TO(i), (histb_vdec_hevc_ab & BIT(10)) ?
+			  VDM_TIMEOUT_HEVC : VDM_TIMEOUT_MOD);
+	if (histb_vdec_hevc_ab & BIT(9))
+		vdm_write(dev, VDM_PRC_CACHE_TYPE, 2);
 
 	vdm_write(dev, VDM_YSTADDR_1D, lower_32_bits(run->dst_dma));
 	/*
 	 * The engine writes the band geometry documented in histb_vdec.h here
 	 * too: YSTRIDE_1D is the 16-row band pitch, the chroma plane sits
 	 * behind the whole luma band array plus the head-inf area. Measured on
-	 * a 320x240 intra frame: with the head-inf offset left clear and a
-	 * line pitch in YSTRIDE_1D, 73 of 4800 luma lines land where the model
-	 * puts them; with this shape and the picture message's scratch split,
+	 * a 320x240 intra frame: with the head-inf offset left clear and a line
+	 * pitch in YSTRIDE_1D, 73 of 4800 luma lines land where the model puts
+	 * them; with this shape and the picture message's scratch split,
 	 * all 4800.
 	 */
 	vdm_write(dev, VDM_YSTRIDE_1D,
@@ -833,10 +996,15 @@ static void histb_hevc_program_regs(struct histb_vdec_dev *dev,
 	vdm_write(dev, VDM_HEAD_INF_OFFSET,
 		  histb_vdec_head_inf_bytes(lines));
 	/* post-filter scratch of this generation */
-	vdm_write(dev, VDM_PPFD_BUF_ADDR,
-		  lower_32_bits(histb_vdec_tables_dma(&dev->pool) +
-				HISTB_TABLE_OFF_PPFD));
-	vdm_write(dev, VDM_PPFD_BUF_LEN, HISTB_HEVC_PPFD_ROWS - 1);
+	if (histb_vdec_hevc_ab & BIT(7)) {
+		vdm_write(dev, VDM_PPFD_BUF_ADDR, 0);
+		vdm_write(dev, VDM_PPFD_BUF_LEN, 0);
+	} else {
+		vdm_write(dev, VDM_PPFD_BUF_ADDR,
+			  lower_32_bits(histb_vdec_tables_dma(&dev->pool) +
+					HISTB_TABLE_OFF_PPFD));
+		vdm_write(dev, VDM_PPFD_BUF_LEN, HISTB_HEVC_PPFD_ROWS - 1);
+	}
 
 	vdm_write(dev, VDM_INT_STATE, 0xffffffffu);
 	vdm_write(dev, VDM_INT_MASK, 0xfffffffeu);
@@ -851,8 +1019,8 @@ static int histb_vdec_hevc_start(struct histb_vdec_ctx *ctx)
 		return -ENOMEM;
 
 	/*
-	 * The PMV pool is allocated on the first frame that needs it, when
-	 * the SPS fixes the slot geometry; nothing else is per-context.
+	 * The PMV pool is allocated on the first frame that needs it, when the
+	 * SPS fixes the slot geometry; nothing else is per-context.
 	 */
 	ctx->priv = hevc;
 
@@ -970,8 +1138,8 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 		     (HISTB_VDEC_SLOT_WORDS - 64) * 4);
 
 	/*
-	 * The driver core has applied the request to the control handler
-	 * before scheduling this job, so p_cur carries this frame's values.
+	 * The driver core has applied the request to the control handler before
+	 * scheduling this job, so p_cur carries this frame's values.
 	 */
 	ctrl = v4l2_ctrl_find(&ctx->ctrl_hdl, V4L2_CID_STATELESS_HEVC_SPS);
 	run.sps = ctrl ? ctrl->p_cur.p_hevc_sps : NULL;
@@ -995,41 +1163,41 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 	/*
 	 * The message this function builds needs all five descriptors and at
 	 * least one slice: the picture words read SPS, PPS and decode_params,
-	 * D64..D319 always copy the scaling matrix, and the slice chain anchored
-	 * in D63 has to have a first slot.
+	 * D64..D319 always copy the scaling matrix, and the slice chain
+	 * anchored in D63 has to have a first slot.
 	 *
 	 * What is worth saying is which half of it is reachable. Every control
 	 * named above is registered by histb_vdec_hevc_ctrls[] at the bottom of
 	 * this file, a compound control has storage from registration onward,
 	 * and the control core clamps a write to a dynamic array to the
-	 * registered dimensions (v4l2-ctrls-api.c: an oversized request
-	 * is cut to .dims[0] elements and answers ENOSPC, a zero-sized one
-	 * answers EFAULT), so no pointer here can be NULL and n_slices can be
-	 * neither 0 nor larger than the 8 entries the slice control declares.
-	 * That makes this line and the pool-count check below assertions of the
-	 * uAPI contract rather than gates with an observed trigger; a refusal
-	 * would still reach the client as a capture buffer with bytesused 0,
-	 * which is the only signal a refusal gives on this engine.
-	 * TODO: one host-side run of VIDIOC_S_EXT_CTRLS on
-	 * V4L2_CID_STATELESS_HEVC_SLICE_PARAMS at size 0 and at 9 elements,
-	 * reading the ioctl return, is what would let both tests be dropped
-	 * instead of documented.
+	 * registered dimensions (v4l2-ctrls-api.c: an oversized request is cut
+	 * to .dims[0] elements and answers ENOSPC, a zero-sized one answers
+	 * EFAULT), so no pointer here can be NULL and n_slices can be neither 0
+	 * nor larger than the 8 entries the slice control declares. That makes
+	 * this line and the pool-count check below assertions of the uAPI
+	 * contract rather than gates with an observed trigger; a refusal would
+	 * still reach the client as a capture buffer with bytesused 0, which is
+	 * the only signal a refusal gives on this engine. TODO: one host-side
+	 * run of VIDIOC_S_EXT_CTRLS on V4L2_CID_STATELESS_HEVC_SLICE_PARAMS at
+	 * size 0 and at 9 elements, reading the ioctl return, is what would let
+	 * both tests be dropped instead of documented.
 	 */
 	if (!run.sps || !run.pps || !run.dec || !run.scaling || !run.slices ||
 	    !n_slices)
 		return -EINVAL;
 
 	/*
-	 * The VDM reconstructs NV21 16x16 tiles: 8-bit 4:2:0 only, because
-	 * CFG1 of this decoder generation has no 10-bit enable field.
+	 * The VDM reconstructs NV21 16x16 tiles: 8-bit 4:2:0 only, because CFG1
+	 * of this decoder generation has no 10-bit enable field.
 	 *
 	 * Tiled pictures are refused (BIT(16) lifts the refusal only as the
 	 * tile address-domain probe): with V4L2_HEVC_PPS_FLAG_TILES_ENABLED the
 	 * engine stops after a partial first frame for every grid shape tried
-	 * on the board, whether or not the tile info image is written, and
-	 * each such job costs a frame decode timeout, which on an older build
-	 * used to wedge the block for the other protocols; measured here it no
-	 * longer does, so the refusal is about the picture, not about the lock-up.
+	 * on the board, whether or not the tile info image is written, and each
+	 * such job costs a frame decode timeout, which on an older build used
+	 * to wedge the block for the other protocols; measured here it no
+	 * longer does, so the refusal is about the picture, not about the
+	 * lock-up.
 	 *
 	 * These are judged per job, not in a control .try_ctrl(): the handler
 	 * holds an all-zero default which TRY_EXT_CTRLS reads back as if a
@@ -1040,41 +1208,45 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 	    (run.sps->flags & V4L2_HEVC_SPS_FLAG_SEPARATE_COLOUR_PLANE))
 		return -EINVAL;
 	/*
-	 * Tiled pictures are refused before the doorbell: the board reads a
-	 * refusal, no "job programmed" line, no timeout, and the capture buffer
-	 * comes back with bytesused 0. What accepting tiles needs is the
-	 * raster/tile address split, not a longer timeout: the vendor converts
-	 * four of the six address-bearing slice words through its CPU-side
-	 * tile-scan-to-raster map when tiles are on (D8, D9, D43 get the raster
-	 * address, D10 and D44 the tile-scan one, and D6 bits17:0 carry an
-	 * independent-slice address the driver has no value for). Following that
-	 * split does not decode either: a 2x2 grid wrote 0 of 4800 luma lines on
-	 * all three frames and each job ran to the watchdog, and the best any
-	 * tiled shape has done on the board is 1156/4800 luma plus 568/2400
-	 * chroma on a first frame, nothing after it. Judging the address split
-	 * needs a tiled picture carried by more than one slice, because a
-	 * single-slice picture makes both orders equal; neither local encoder
-	 * produces one (kvazaar emits one slice per tiled picture and refuses a
-	 * slice start that is not on a tile-column edge, x265 only does
-	 * multi-slice with wavefront, which it treats as exclusive with tiles),
-	 * so the corpus can not close this and the disposition stays a refusal.
+	 * The refusal above the tile probe arm is the delivered disposition,
+	 * and it happens before the doorbell: with the flag set and BIT(16)
+	 * clear, the board reads three refusals, no "job programmed" line, no
+	 * timeout, and the capture buffer comes back with bytesused 0. What
+	 * accepting tiles needs is the raster/tile address split, not a longer
+	 * timeout: the vendor converts four of the six address-bearing slice
+	 * words through its CPU-side tile-scan-to-raster map when tiles are on
+	 * (D8, D9, D43 get the raster address, D10 and D44 the tile-scan one,
+	 * and D6 bits17:0 carry an independent-slice address the driver has no
+	 * value for), and BIT(16)/BIT(17) are the arms that try to follow that.
+	 * The arms do not decode either: the 2x2 grid wrote 0 of 4800 luma
+	 * lines on all three frames and each job ran to the watchdog, and the
+	 * best any tiled shape has done on the board is 1156/4800 luma plus
+	 * 568/2400 chroma on a first frame, nothing after it. Judging the
+	 * address split needs a tiled picture carried by more than one slice,
+	 * because a single-slice picture makes both orders equal; neither local
+	 * encoder will produce one (kvazaar emits one slice per tiled picture
+	 * and refuses a slice start that is not on a tile-column edge, x265
+	 * only does multi-slice with wavefront, which it treats as exclusive
+	 * with tiles), so the corpus cannot close this and the disposition
+	 * stays a refusal.
 	 */
-	if (run.pps->flags & V4L2_HEVC_PPS_FLAG_TILES_ENABLED)
+	if ((run.pps->flags & V4L2_HEVC_PPS_FLAG_TILES_ENABLED) &&
+	    !(histb_vdec_hevc_ab & BIT(16)))
 		return -EINVAL;
 	/*
 	 * A picture whose SPS declares scaling lists is not decodable here.
-	 * Measured with the flag claimed on an otherwise byte-exact picture: the
-	 * delivered frame differs from the software reference in 147379 of the
-	 * 147456 bytes the picture occupies, and the top-left luma comes back
-	 * zeroed. The submitted matrices are not consulted at all - filling every
-	 * list with 8, 16, 32, or the DC field with 8, or sending nothing, all
-	 * produce byte-identical captures (md5 4264762e... on 384x256,
-	 * 0d8eb4ff... on 1536x128) while the same job without the flag is exact.
-	 * So no re-packing of D64 onwards can fix it, and identity lists - which
-	 * must be a no-op - are already wrong: refusing is the only disposition
-	 * that does not deliver bad pixels. Every stream measured on the board
-	 * so far declares scaling_list_enabled clear, so this refuses nothing
-	 * that decodes correctly today.
+	 * Measured with the flag claimed on an otherwise byte-exact picture:
+	 * the delivered frame differs from the software reference in 147379 of
+	 * the 147456 bytes the picture occupies, and the top-left luma comes
+	 * back zeroed. The submitted matrices are not consulted at all -
+	 * filling every list with 8, 16, 32, or the DC field with 8, or sending
+	 * nothing, all produce byte-identical captures (md5 4264762e... on
+	 * 384x256, 0d8eb4ff... on 1536x128) while the same job without the flag
+	 * is exact. So no re-packing of D64 onwards can fix it, and identity
+	 * lists - which must be a no-op - are already wrong: refusing is the
+	 * only disposition that does not deliver bad pixels. Every stream
+	 * measured on the board so far declares scaling_list_enabled clear, so
+	 * this refuses nothing that decodes correctly today.
 	 */
 	if (run.sps->flags & V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED)
 		return -EINVAL;
@@ -1083,37 +1255,36 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 	 * One slice slot per slice, chained through D63, and the message pool
 	 * holds HISTB_VDEC_MAX_SLICE_SLOTS of them (140 slots of 320 words,
 	 * histb_vdec.h) - which is also the vendor's own limit for one start:
-	 * its slice chain is counted against 140 and the remainder is handed
-	 * to the engine by chain cutting, which clears the link word and
-	 * starts the VDM again. This job path programs once and kicks once
-	 * per frame, so a longer chain has neither storage nor a second
-	 * doorbell, and the whole picture would be described by the first 140
-	 * slots while the CTU budget in pic[0] and CFG0 still promises every CTB
-	 * in the grid. Accepting one needs that multi-start state machine, with
-	 * the budget and the per-slice up-message area (4 words per slice,
-	 * histb_vdec.h) accounted per segment. The slice control this driver
-	 * registers declares 8 entries and the control core cuts a longer
-	 * submission to that (v4l2-ctrls-api.c), so the bound that a client
-	 * can actually hit is 8; this line states the pool limit in code,
-	 * which is the one that would have to be raised along with a
-	 * multi-start path.
+	 * its slice chain is counted against 140 and the remainder is handed to
+	 * the engine by chain cutting, which clears the link word and starts
+	 * the VDM again. This job path programs once and kicks once per frame,
+	 * so a longer chain has neither storage nor a second doorbell, and the
+	 * whole picture would be described by the first 140 slots while the CTU
+	 * budget in pic[0] and CFG0 still promises every CTB in the grid.
+	 * Accepting one needs that multi-start state machine, with the budget
+	 * and the per-slice up-message area (4 words per slice, histb_vdec.h)
+	 * accounted per segment. The slice control this driver registers
+	 * declares 8 entries and the control core cuts a longer submission to
+	 * that (v4l2-ctrls-api.c), so the bound that a client can actually hit
+	 * is 8; this line states the pool limit in code, which is the one that
+	 * would have to be raised along with a multi-start path.
 	 */
 	if (n_slices > HISTB_VDEC_MAX_SLICE_SLOTS)
 		return -EINVAL;
 
 	payload_bits = vb2_get_plane_payload(&src->vb2_buf, 0) * 8;
 	/*
-	 * An OUTPUT buffer with no payload declares no access unit. Every stream
-	 * address in the message is an offset inside this plane - the segment
-	 * words D0 of each slice and VDM_STREAM_BASE are computed from its DMA
-	 * address and bounded by payload_bits - so with zero bytes there is no
-	 * span to hand the engine and no end to bound any slice's declared length
-	 * by. Padding the declaration is not an option: the VDM decodes the bytes
-	 * it is given and does not re-synchronise on its own (histb_h264_pack_rbsp
-	 * carries the all-I_PCM measurement that shows it), so an empty span
-	 * cannot be stretched into a decodable slice. A truncated access unit
-	 * reaches this line only if it carries no slice NAL at all; the slice scan
-	 * below otherwise refuses it on the count.
+	 * An OUTPUT buffer with no payload declares no access unit. Every
+	 * stream address in the message is an offset inside this plane - the
+	 * segment words D0 of each slice and VDM_STREAM_BASE are computed from
+	 * its DMA address and bounded by payload_bits - so with zero bytes
+	 * there is no span to hand the engine and no end to bound any slice's
+	 * declared length by. Padding the declaration is not an option: the VDM
+	 * decodes the bytes it is given and does not re-synchronise on its own
+	 * (histb_h264_pack_rbsp carries the all-I_PCM measurement that shows
+	 * it), so an empty span cannot be stretched into a decodable slice. A
+	 * truncated access unit reaches this line only if it carries no slice
+	 * NAL at all; the slice scan below otherwise refuses it on the count.
 	 */
 	if (!payload_bits)
 		return -EINVAL;
@@ -1129,18 +1300,18 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 		 * message ABI carries no field that names where a NAL starts -
 		 * each slice slot only gets its own header-relative offset, and
 		 * the chain anchor in pic D63 points at message slots, not at
-		 * stream positions - so slice_starts[] can only come from a scan
-		 * of the plane. The OUTPUT queue keeps a kernel mapping for
-		 * exactly this reason - histb_vdec_drv.c deliberately leaves
-		 * DMA_ATTR_NO_KERNEL_MAPPING off that queue - so landing on
-		 * this exit means that promise was broken rather than that the
-		 * client did something wrong, which is why the once-per-boot
-		 * warning is the client-visible part. Accepting a buffer
-		 * without a mapping would need per-NAL offsets from the client,
-		 * which the stateless HEVC control set has no field for, or the
-		 * start-code-detection up-message the vendor firmware uses,
-		 * which this port does not implement (it kicks the VDM
-		 * directly).
+		 * stream positions - so slice_starts[] can only come from a
+		 * scan of the plane. The OUTPUT queue keeps a kernel mapping
+		 * for exactly this reason - histb_vdec_drv.c deliberately
+		 * leaves DMA_ATTR_NO_KERNEL_MAPPING off that queue - so landing
+		 * on this exit means that promise was broken rather than that
+		 * the client did something wrong, which is why the
+		 * once-per-boot warning is the client-visible part. Accepting a
+		 * buffer without a mapping would need per-NAL offsets from the
+		 * client, which the stateless HEVC control set has no field
+		 * for, or the start-code-detection up-message the vendor
+		 * firmware uses, which this port does not implement (it kicks
+		 * the VDM directly).
 		 */
 		if (!stream_va) {
 			dev_warn_once(dev->dev,
@@ -1152,45 +1323,46 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 						   ARRAY_SIZE(slice_starts));
 		/*
 		 * The number of slice NALs found must be the number of
-		 * slice-parameter entries submitted: each entry is handed its own
-		 * stream span, so a count mismatch means the two lists cannot be
-		 * paired and some slice would address the wrong NAL while another
-		 * NAL is described by no slot at all. This is also the implicit
-		 * rejection of slice carriers the message ABI cannot describe -
-		 * the scan counts nal_unit_type 0..9 and 16..23 only, so a picture
-		 * carried by the temporal-sub-layer or random-access types 10..13,
-		 * or a buffer whose slice NALs are interleaved with something the
-		 * scan skipped, is refused on the count rather than decoded from a
-		 * span that starts in a NAL the engine cannot parse (the H.264
-		 * path rejects data partitioning the same way, counting only types
-		 * 1 and 5). Measured on the board: declaring two slice entries for
-		 * an access unit that carries one IDR slice NAL is refused before
-		 * the doorbell - no "job programmed" line appears and the picture
-		 * slot keeps the previous legal job's bytes - while an AU of VPS,
-		 * SPS, PPS, prefix SEI and one IDR NAL counts exactly 1, which is
-		 * what every scored stream submits.
+		 * slice-parameter entries submitted: each entry is handed its
+		 * own stream span, so a count mismatch means the two lists
+		 * cannot be paired and some slice would address the wrong NAL
+		 * while another NAL is described by no slot at all. This is
+		 * also the implicit rejection of slice carriers the message ABI
+		 * cannot describe - the scan counts nal_unit_type 0..9 and
+		 * 16..23 only, so a picture carried by the temporal-sub-layer
+		 * or random-access types 10..13, or a buffer whose slice NALs
+		 * are interleaved with something the scan skipped, is refused
+		 * on the count rather than decoded from a span that starts in a
+		 * NAL the engine cannot parse (the H.264 path rejects data
+		 * partitioning the same way, counting only types 1 and 5).
+		 * Measured on the board: declaring two slice entries for an
+		 * access unit that carries one IDR slice NAL is refused before
+		 * the doorbell - no "job programmed" line appears and the
+		 * picture slot keeps the previous legal job's bytes - while an
+		 * AU of VPS, SPS, PPS, prefix SEI and one IDR NAL counts
+		 * exactly 1, which is what every scored stream submits.
 		 */
 		if (found != n_slices)
 			return -EINVAL;
 	} else {
 		/*
-		 * Without start codes the slices in the OUTPUT buffer
-		 * cannot be delimited, so a single-slice submission is the
-		 * only layout the driver can consume.
+		 * Without start codes the slices in the OUTPUT buffer cannot be
+		 * delimited, so a single-slice submission is the only layout
+		 * the driver can consume.
 		 *
 		 * The reason it can be no wider is that this route has neither
 		 * half of the delimiting input: there is no start code to scan
-		 * (that is what the control value declares), and the port has no
-		 * start-code-detection up-message to take boundaries from, since
-		 * the driver kicks the VDM directly. With one slice the whole
-		 * buffer is the span, so nothing has to be delimited. Measured on
-		 * the board, a single-slice submission with START_CODE_NONE is
-		 * accepted and the engine is kicked for it, so this is the shape
-		 * the route serves, not a missed gate. Accepting more than one
-		 * slice needs per-slice NAL offsets from the client, which the
-		 * stateless HEVC controls cannot express; the scored corpus all
-		 * arrives through the Annex-B route, so this path is covered by
-		 * direct submissions only.
+		 * (that is what the control value declares), and the port has
+		 * no start-code-detection up-message to take boundaries from,
+		 * since the driver kicks the VDM directly. With one slice the
+		 * whole buffer is the span, so nothing has to be delimited.
+		 * Measured on the board, a single-slice submission with
+		 * START_CODE_NONE is accepted and the engine is kicked for it,
+		 * so this is the shape the route serves, not a missed gate.
+		 * Accepting more than one slice needs per-slice NAL offsets
+		 * from the client, which the stateless HEVC controls cannot
+		 * express; the scored corpus all arrives through the Annex-B
+		 * route, so this path is covered by direct submissions only.
 		 */
 		if (n_slices != 1)
 			return -EINVAL;
@@ -1211,8 +1383,8 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 	 * raster coordinates in slot[9] divide by zero, and the last slice's
 	 * range end becomes 0 - 1. These two SPS fields are the luma size of
 	 * every decoded picture in H.265 7.4.3.2 and have no zero reading
-	 * there, so a conformant client never hits this. Measured on the
-	 * board: a SPS with pic_width_in_luma_samples 0 is refused before the
+	 * there, so a conformant client never hits this. Measured on the board:
+	 * a SPS with pic_width_in_luma_samples 0 is refused before the
 	 * doorbell - no "job programmed" line and the picture slot keeps the
 	 * previous legal job's bytes - and with the rest of the descriptor
 	 * legal this is the gate that sees it.
@@ -1236,39 +1408,52 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 	 * control layer cannot enforce, so the range this engine is known to
 	 * work in has to be asserted here. Measured on the board: a descriptor
 	 * whose derived CTB size is 128 (log2 7) is refused before the
-	 * doorbell, while CTB 32 and CTB 64
-	 * are both decoded byte-exact across the scored corpus, including the
-	 * single-CTB-row and height-scan families at those two sizes.
-	 * TODO: no picture with a 16-sample CTB (log2 4) has been decoded on
-	 * the board; one would show whether the lower bound is 4 or the
-	 * engine's own minimum is 5, and whether an 8-sample CTB merely
-	 * wastes grid rows or is refused by the hardware.
+	 * doorbell, while CTB 32 and CTB 64 are both decoded byte-exact across
+	 * the scored corpus, including the single-CTB-row and height-scan
+	 * families at those two sizes. TODO: no picture with a 16-sample CTB
+	 * (log2 4) has been decoded on the board; one would show whether the
+	 * lower bound is 4 or the engine's own minimum is 5, and whether an
+	 * 8-sample CTB merely wastes grid rows or is refused by the hardware.
 	 */
 	if (run.ctb_log2 < 4 || run.ctb_log2 > 6)
 		return -EINVAL;
 	run.width_ctbs = (run.width + (1u << run.ctb_log2) - 1) >> run.ctb_log2;
 	run.height_ctbs = (run.height + (1u << run.ctb_log2) - 1) >> run.ctb_log2;
 	/*
+	 * The bottom lines of a single-CTB-row picture are only written once a
+	 * further CTB-row boundary is reached; measured on the board on 1536x64
+	 * with CTU size 64: the missing constant 5 luma lines (plus 3 chroma
+	 * lines) never appear in the capture buffer. Padding the grid here
+	 * leaves the programmed luma height alone - pic[54] still carries
+	 * run.height - so the CTB budget in pic[0]/CFG0 is the only thing that
+	 * changes, which separates "where does the picture end" (deblocking)
+	 * from "what flushes the line pipeline".
+	 */
+	if (histb_vdec_hevc_ab & BIT(15))
+		run.height_ctbs++;
+	/*
 	 * The last CTB row's tail only comes out when another row boundary
 	 * follows it, so a picture one CTB row tall is delivered missing a
 	 * constant 1280 bytes per 256-byte luma tile column - 11 of its 16 rows
-	 * written - plus 3 of every chroma tile's 8 rows, and those bytes are not
-	 * present anywhere else in the capture buffer. Padding the grid
-	 * changes the picture-bottom deblocking follows, so a
-	 * limited parse plus a copy cannot rebuild the tail either.  Two CTB
-	 * rows, or a coded height that lands mid-row, are byte-exact, so this is
-	 * not a general bottom-edge defect and there is nothing to work around
-	 * at one row.  Refuse the job instead of delivering a frame that is
-	 * short by a band: the caller falls back to software.
+	 * written - plus 3 of every chroma tile's 8 rows, and those bytes are
+	 * not present anywhere else in the capture buffer. The grid padding arm
+	 * above showed that the deblocking picture-bottom follows the padded
+	 * grid, so a limited parse plus a copy cannot rebuild the tail either.
+	 * Two CTB rows, or a coded height that lands mid-row, are byte-exact,
+	 * so this is not a general bottom-edge defect and there is nothing to
+	 * work around at one row. Refuse the job instead of delivering a frame
+	 * that is short by a band: the caller falls back to software. The
+	 * BIT(15) probe above still reaches the engine, so the mechanism stays
+	 * reproducible on the same boot.
 	 */
 	if (run.height_ctbs < 2)
 		return -EINVAL;
 	run.ctu_count = run.width_ctbs * run.height_ctbs;
 
 	/*
-	 * PMV slot geometry follows the stream resolution with a 1080p
-	 * floor; the pool grows on demand, which invalidates the slot ids
-	 * of earlier frames.
+	 * PMV slot geometry follows the stream resolution with a 1080p floor;
+	 * the pool grows on demand, which invalidates the slot ids of earlier
+	 * frames.
 	 */
 	w_mb = (run.width + 15) / 16;
 	h_mb = (run.height + 15) / 16;
@@ -1278,23 +1463,23 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 	if (ret)
 		return ret;
 	/*
-	 * The coded picture has to fit the negotiated CAPTURE rectangle, because
-	 * the buffer it lands in was sized from that rectangle
+	 * The coded picture has to fit the negotiated CAPTURE rectangle,
+	 * because the buffer it lands in was sized from that rectangle
 	 * (histb_vdec_buf_geom() takes bytesperline and the luma row count from
-	 * it) while the engine writes its own coded grid: measured on the board,
-	 * two jobs on the same 1920x256 geometry wrote exactly the same range,
-	 * 737280 bytes = 1920 * 256 * 3 / 2, whether the stream carried 2472 or
-	 * 29774 bytes of code, so the extent follows the declared picture and not
-	 * the payload size. A larger coded picture than the negotiation would
-	 * therefore put tiles outside the buffer the client was told about, which
-	 * is why this is refused instead of clamped (and the same disposition the
-	 * rkvdec driver uses). histb_vdec_try_fmt_cap() raises the CAPTURE
-	 * rectangle to whatever the client declared on OUTPUT (see
-	 * histb_vdec_drv.c), so the only way to reach this line is an OUTPUT
-	 * declaration smaller than the SPS actually submitted. Measured
-	 * on the board: a SPS declaring 4000 columns is refused before the
-	 * doorbell, and a refusal is visible as bytesused 0 on the capture
-	 * buffer.
+	 * it) while the engine writes its own coded grid: measured on the
+	 * board, two jobs on the same 1920x256 geometry wrote exactly the same
+	 * range, 737280 bytes = 1920 * 256 * 3 / 2, whether the stream carried
+	 * 2472 or 29774 bytes of code, so the extent follows the declared
+	 * picture and not the payload size. A larger coded picture than the
+	 * negotiation would therefore put tiles outside the buffer the client
+	 * was told about, which is why this is refused instead of clamped (and
+	 * the same disposition the rkvdec driver uses).
+	 * histb_vdec_try_fmt_cap() raises the CAPTURE rectangle to whatever the
+	 * client declared on OUTPUT (see histb_vdec_drv.c), so the only way to
+	 * reach this line is an OUTPUT declaration smaller than the SPS
+	 * actually submitted. Measured on the board: a SPS declaring 4000
+	 * columns is refused before the doorbell, and a refusal is visible as
+	 * bytesused 0 on the capture buffer.
 	 */
 	if (run.sps->pic_width_in_luma_samples > cap_w ||
 	    run.sps->pic_height_in_luma_samples > cap_h)
@@ -1313,9 +1498,9 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 		return ret;
 
 	/*
-	 * Map the DPB onto the APC frame table. Capture buffer indexes are
-	 * the APC slots; unreferenced slots point at the output frame like
-	 * an empty vendor APC tail.
+	 * Map the DPB onto the APC frame table. Capture buffer indexes are the
+	 * APC slots; unreferenced slots point at the output frame like an empty
+	 * vendor APC tail.
 	 */
 	if (dst->vb2_buf.index >= HISTB_HEVC_NUM_APC_SLOTS)
 		return -EINVAL;
@@ -1328,16 +1513,17 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 	}
 	/*
 	 * The bound is read before the loop that uses it as an index count, so
-	 * its first job is to keep that loop inside dec->dpb[], which is exactly
-	 * V4L2_HEVC_DPB_ENTRIES_NUM_MAX entries long and is not clamped by the
-	 * control layer against this one-byte count. It is also what the message
-	 * can address: the picture slot carries a 16-word frame table (D8..D23)
-	 * and a 16-word POC table (D26..D41), and the lists in each slice slot
-	 * name those slots as 4-bit ids, so an entry past the sixteenth has
-	 * neither an address nor a slot id even if it could be read. The capture
-	 * queue is held to the same 16 buffers by histb_vdec_queue_setup(), so
-	 * no part of the pipeline can widen past it; accepting more would need a
-	 * slot indirection table outside the picture message.
+	 * its first job is to keep that loop inside dec->dpb[], which is
+	 * exactly V4L2_HEVC_DPB_ENTRIES_NUM_MAX entries long and is not clamped
+	 * by the control layer against this one-byte count. It is also what the
+	 * message can address: the picture slot carries a 16-word frame table
+	 * (D8..D23) and a 16-word POC table (D26..D41), and the lists in each
+	 * slice slot name those slots as 4-bit ids, so an entry past the
+	 * sixteenth has neither an address nor a slot id even if it could be
+	 * read. The capture queue is held to the same 16 buffers by
+	 * histb_vdec_queue_setup(), so no part of the pipeline can widen past
+	 * it; accepting more would need a slot indirection table outside the
+	 * picture message.
 	 */
 	if (run.dec->num_active_dpb_entries > V4L2_HEVC_DPB_ENTRIES_NUM_MAX)
 		return -EINVAL;
@@ -1347,17 +1533,18 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 
 		vb = vb2_find_buffer(cap_q, entry->timestamp);
 		/*
-		 * A reference has to be a buffer that is actually held out of the
-		 * capture queue: the uAPI names a DPB picture only by the timestamp
-		 * of its capture buffer, and this driver's frame storage model makes
-		 * that buffer index the APC slot - the same index writes the frame
-		 * address into D8..D23, the POC into D26..D41, and the 4-bit ids the
-		 * slice lists and the collocated picture use. An index at or above
-		 * the 16 slots cannot be encoded there. Passing it through is not
-		 * a no-op: the unused slots are prefilled above with the
-		 * destination address of this very frame, so an entry that
-		 * resolves to nothing silently makes the engine inter-predict from
-		 * the picture it is writing. The refusal is logged with the
+		 * A reference has to be a buffer that is actually held out of
+		 * the capture queue: the uAPI names a DPB picture only by the
+		 * timestamp of its capture buffer, and this driver's frame
+		 * storage model makes that buffer index the APC slot - the same
+		 * index writes the frame address into D8..D23, the POC into
+		 * D26..D41, and the 4-bit ids the slice lists and the
+		 * collocated picture use. An index at or above the 16 slots
+		 * cannot be encoded there. Passing it through is not a no-op:
+		 * the unused slots are prefilled above with the destination
+		 * address of this very frame, so an entry that resolves to
+		 * nothing silently makes the engine inter-predict from the
+		 * picture it is writing. The refusal is logged with the
 		 * offending entry because the client's only other signal is
 		 * bytesused 0 on the capture buffer, which does not say which
 		 * timestamp it named wrongly.
@@ -1390,18 +1577,19 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 		/*
 		 * A slice that starts at or past the end of the CTB grid has no
 		 * CTB to write. The range words are built from these addresses:
-		 * D43/D44 of a slice carry its CTB range end, computed as the next
-		 * slice's start minus one and, for the last slice, as ctu_count - 1
-		 * (the vendor's arithmetic for the last CTB of the slice, which
-		 * it writes in raster order to D43 and tile order to D44), so an
-		 * address outside the grid makes the previous slice's range
-		 * overshoot the picture while the raster coordinates in D9
-		 * (address / width_ctbs, address % width_ctbs) name a CTB row that
-		 * does not exist. H.265 7.4.3 requires a slice's segment address
-		 * to map inside PicSizeInCtbsY (the raster/tile mapping itself is
-		 * 6.5.1), so this refuses no conformant stream; measured
-		 * over the 96 scored streams the address checks never fired - the
-		 * refusals on record are the tiled and the single-CTB-row shapes.
+		 * D43/D44 of a slice carry its CTB range end, computed as the
+		 * next slice's start minus one and, for the last slice, as
+		 * ctu_count - 1 (the vendor's arithmetic for the last CTB of
+		 * the slice, which it writes in raster order to D43 and tile
+		 * order to D44), so an address outside the grid makes the
+		 * previous slice's range overshoot the picture while the raster
+		 * coordinates in D9 (address / width_ctbs, address %
+		 * width_ctbs) name a CTB row that does not exist. H.265 7.4.3
+		 * requires a slice's segment address to map inside
+		 * PicSizeInCtbsY (the raster/tile mapping itself is 6.5.1), so
+		 * this refuses no conformant stream; measured over the 96
+		 * scored streams the address checks never fired - the refusals
+		 * on record are the tiled and the single-CTB-row shapes.
 		 */
 		if (run.slices[i].slice_segment_addr >= run.ctu_count)
 			return -EINVAL;
@@ -1414,20 +1602,20 @@ static int histb_vdec_hevc_run(struct histb_vdec_ctx *ctx,
 		if (!i && run.slices[i].slice_segment_addr)
 			return -EINVAL;
 		/*
-		 * The chain is a partition of the CTB grid: each slice's
-		 * range end (D43/D44) is the next slice's start minus one,
-		 * so an address that repeats or goes backwards puts the
-		 * previous slot's end at or below its own start while this
-		 * slot claims a range another slot already covers.
-		 * Nothing can be clamped here without dropping CTBs out of
-		 * every window, which is what the engine would then be told
-		 * to skip. H.265 7.4.3 emits slice addresses in increasing
-		 * raster order, and this never fired on anything measured so
-		 * far: the scored corpus carries one slice per picture, so
-		 * the multi-slice chains that exercise it are H.264's.
-		 * TODO: one HEVC picture submitted as two increasing slices
-		 * and scored byte-exact would show that the range
-		 * arithmetic holds at the boundary between the two slots.
+		 * The chain is a partition of the CTB grid: each slice's range
+		 * end (D43/D44) is the next slice's start minus one, so an
+		 * address that repeats or goes backwards puts the previous
+		 * slot's end at or below its own start while this slot claims a
+		 * range another slot already covers. Nothing can be clamped
+		 * here without dropping CTBs out of every window, which is what
+		 * the engine would then be told to skip. H.265 7.4.3 emits
+		 * slice addresses in increasing raster order, and this never
+		 * fired on anything measured so far: the scored corpus carries
+		 * one slice per picture, so the multi-slice chains that
+		 * exercise it are H.264's. TODO: one HEVC picture submitted as
+		 * two increasing slices and scored byte-exact would show that
+		 * the range arithmetic holds at the boundary between the two
+		 * slots.
 		 */
 		if (i && run.slices[i].slice_segment_addr <=
 		    run.slices[i - 1].slice_segment_addr)
