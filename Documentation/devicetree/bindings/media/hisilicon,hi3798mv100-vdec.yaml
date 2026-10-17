@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/hisilicon,hi3798mv100-vdec.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon Hi3798MV100 video decoder (VDH)
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+properties:
+  compatible:
+    const: hisilicon,hi3798mv100-vdec
+
+  reg:
+    items:
+      - description:
+          VDM register window. The size has to reach past 0x1014 so that the
+          syntax-error statistics at the end of the block are readable.
+      - description: SCD block with the three decoder global registers
+
+  reg-names:
+    items:
+      - const: vdm
+      - const: scd
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: vdec
+
+  resets:
+    minItems: 2
+    maxItems: 2
+    description:
+      Two reset requests in the clock and reset generator, both of which the
+      vendor firmware releases before the register window answers reads - the
+      subsystem-wide one and the VDM's own one.
+
+  reset-names:
+    items:
+      - const: global
+      - const: vdm
+
+  memory-region:
+    maxItems: 1
+    description:
+      Phandle to a reserved memory region to allocate decoder buffers from. Both
+      queues are dma-contig and the message pool is programmed as a single
+      physical base address, so these buffers have to be physically contiguous.
+      Without this property they are taken from the default CMA area.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - clocks
+  - clock-names
+  - resets
+  - reset-names
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/clock/hisilicon,hi3798mv100-crg.h>
+
+    video-codec@8c30000 {
+        compatible = "hisilicon,hi3798mv100-vdec";
+        reg = <0x8c30000 0x1100>, <0x8c3c000 0x1000>;
+        reg-names = "vdm", "scd";
+        interrupts = <GIC_SPI 95 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&crg HI3798MV100_VDH_CLK>;
+        clock-names = "vdec";
+        resets = <&crg 0x78 4>, <&crg 0x78 6>;
+        reset-names = "global", "vdm";
+    };
