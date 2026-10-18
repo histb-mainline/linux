@@ -18,4 +18,15 @@ config SND_SOC_HISTB_AIAO_I2S
 	  carries its audio. The receive port taps the serial stream of that
 	  transmit port back in.
 
+config SND_SOC_HISTB_AIAO_CARD
+	tristate "HiSTB AIAO Sound Card"
+	depends on ARCH_HISI || COMPILE_TEST
+	select SND_SOC_HISTB_AIAO_I2S
+	help
+	  Say Y or M here if you want the sound card of the AIAO audio block on
+	  HiSilicon STB SoCs: the transmit port that reaches the HDMI
+	  transmitter, and the receive port that taps that port's serial stream
+	  back in. The capture side has no codec, which is what keeps it from being
+	  described with simple-audio-card.
+
 endmenu
