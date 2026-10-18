@@ -17,4 +17,15 @@ config SND_SOC_HISTB_AIAO_I2S
 	  Hi3716CV200. Each port is an I2S master with its own clock generator and
 	  its own ring-buffer engine.
 
+config SND_SOC_HISTB_AIAO_CARD
+	tristate "HiSTB AIAO Sound Card"
+	depends on ARCH_HISI || COMPILE_TEST
+	select SND_SOC_HISTB_AIAO_I2S
+	help
+	  Say Y here if you want the sound card of the AIAO audio block on
+	  HiSilicon STB SoCs: the playback link hands the transmit port to the
+	  HDMI transmitter, and the capture link reads back the serial stream
+	  that same port puts on the wire. Nothing sits behind the capture
+	  side, which is what keeps it from simple-audio-card.
+
 endmenu
