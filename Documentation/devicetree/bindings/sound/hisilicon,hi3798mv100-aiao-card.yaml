@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/hisilicon,hi3798mv100-aiao-card.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon Hi3798MV100 AIAO sound card
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+description: |
+  The sound card of the AIAO audio block. The playback link hands the
+  transmit port to the HDMI transmitter; the capture link reads back the
+  serial stream that same port puts on the wire.
+
+  Nothing is on the other end of the capture link, so it has no codec,
+  which is what keeps this card from being described with simple-audio-card.
+
+properties:
+  compatible:
+    const: hisilicon,hi3798mv100-aiao-card
+
+  model:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: Name reported for the sound card.
+
+  playback:
+    type: object
+    description:
+      DAI link carrying the audio to the HDMI transmitter.
+    properties:
+      cpu:
+        type: object
+        properties:
+          sound-dai:
+            $ref: /schemas/types.yaml#/definitions/phandle-array
+            maxItems: 1
+        required:
+          - sound-dai
+        additionalProperties: false
+      codec:
+        type: object
+        properties:
+          sound-dai:
+            $ref: /schemas/types.yaml#/definitions/phandle-array
+            maxItems: 1
+        required:
+          - sound-dai
+        additionalProperties: false
+    required:
+      - cpu
+      - codec
+    additionalProperties: false
+
+  capture:
+    type: object
+    description:
+      DAI link reading the transmit port's serial stream back. It has a cpu
+      and no codec.
+    properties:
+      cpu:
+        type: object
+        properties:
+          sound-dai:
+            $ref: /schemas/types.yaml#/definitions/phandle-array
+            maxItems: 1
+        required:
+          - sound-dai
+        additionalProperties: false
+    required:
+      - cpu
+    additionalProperties: false
+
+required:
+  - compatible
+  - model
+  - playback
+  - capture
+
+additionalProperties: false
+
+examples:
+  - |
+    sound {
+        compatible = "hisilicon,hi3798mv100-aiao-card";
+        model = "hi3798mv100-hdmi";
+
+        playback {
+            cpu {
+                sound-dai = <&aiao 0>;
+            };
+            codec {
+                sound-dai = <&hdmi>;
+            };
+        };
+
+        capture {
+            cpu {
+                sound-dai = <&aiao 1>;
+            };
+        };
+    };

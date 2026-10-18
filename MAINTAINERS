@@ -11768,6 +11768,7 @@ HISILICON AIAO AUDIO I2S PORTS
 M:	David Yang <mmyangfl@gmail.com>
 L:	linux-sound@vger.kernel.org
 S:	Supported
+F:	Documentation/devicetree/bindings/sound/hisilicon,hi3798mv100-aiao-card.yaml
 F:	Documentation/devicetree/bindings/sound/hisilicon,hi3798mv100-aiao-i2s.yaml
 F:	sound/soc/hisilicon/histb-aiao-i2s.c
 
