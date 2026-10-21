@@ -239,5 +239,80 @@
 			memcpy-bus-width = <32>;
 			memcpy-burst-size = <256>;
 		};
+
+		uart0: serial@f8b00000 {
+			compatible = "arm,pl011", "arm,primecell";
+			reg = <0xf8b00000 0x1000>;
+			interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_CLK_83P3M>,
+				 <&crg HI3716CV200_CLK_83P3M>;
+			clock-names = "uartclk", "apb_pclk";
+		};
+
+		/*
+		 * The board's own /proc/iomem registers four more PL011 instances
+		 * (`uart:1` 0xf8006000, `uart:2..4` 0xf8b02000/3000/4000), each a 4 KiB
+		 * window, so these are the vendor's addresses rather than a stride guess.
+		 * uart:1 sits in the SYS_CTRL window at 0xf8006000, not next to the others.
+		 *
+		 * Interrupt numbers come from mach/irqs.h's UART block (SPI 49..53); that
+		 * header has been wrong for I2C, the SP804 timers and the MAC on this chip,
+		 * but its UART0 entry is the one anchor the board confirms -- the console
+		 * that works today is `GIC_SPI 49` and the vendor table counts it at ID 81.
+		 * The remaining four are the contiguous rest of that block, and the board
+		 * check that follows deliberately does not need them: PL011 requests the
+		 * IRQ only when a port is opened, so the vendor's own /proc/interrupts
+		 * lists just the console line and says nothing about the others.
+		 */
+		uart1: serial@f8006000 {
+			compatible = "arm,pl011", "arm,primecell";
+			reg = <0xf8006000 0x1000>;
+			interrupts = <GIC_SPI 50 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_UART1_CLK>,
+				 <&crg HI3716CV200_UART1_CLK>;
+			clock-names = "uartclk", "apb_pclk";
+			status = "disabled";
+		};
+
+		uart2: serial@f8b02000 {
+			compatible = "arm,pl011", "arm,primecell";
+			reg = <0xf8b02000 0x1000>;
+			interrupts = <GIC_SPI 51 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_UART2_CLK>,
+				 <&crg HI3716CV200_UART2_CLK>;
+			clock-names = "uartclk", "apb_pclk";
+			status = "disabled";
+		};
+
+		uart3: serial@f8b03000 {
+			compatible = "arm,pl011", "arm,primecell";
+			reg = <0xf8b03000 0x1000>;
+			interrupts = <GIC_SPI 52 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_UART3_CLK>,
+				 <&crg HI3716CV200_UART3_CLK>;
+			clock-names = "uartclk", "apb_pclk";
+			status = "disabled";
+		};
+
+		uart4: serial@f8b04000 {
+			compatible = "arm,pl011", "arm,primecell";
+			reg = <0xf8b04000 0x1000>;
+			interrupts = <GIC_SPI 53 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_UART4_CLK>,
+				 <&crg HI3716CV200_UART4_CLK>;
+			clock-names = "uartclk", "apb_pclk";
+			status = "disabled";
+		};
 	};
+};
+
+/ {
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
 };
