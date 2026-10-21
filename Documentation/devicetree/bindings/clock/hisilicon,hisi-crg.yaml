@@ -33,6 +33,15 @@ properties:
               - hisilicon,hi3798mv200-crg
           - const: syscon
           - const: simple-mfd
+      - items:
+          - enum:
+              - hisilicon,hi3516cv300-crg
+              - hisilicon,hi3516cv300-sysctrl
+              - hisilicon,hi3798cv200-crg
+              - hisilicon,hi3798cv200-sysctrl
+              - hisilicon,hi3798mv200-crg
+              - hisilicon,hi3798mv200-sysctrl
+          - const: syscon
 
   reg:
     maxItems: 1
