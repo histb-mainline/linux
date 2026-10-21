@@ -863,6 +863,113 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 		};
+
+		/*
+		 * The two DesignWare MSH hosts the vendor calls SDIO0 and SDIO1
+		 * (drivers/mmc/host/himciv200/, CONFIG_HIMCIV200_SDIO{0,1}_IOBASE). Both
+		 * windows decode: writing 0x200 then 0x2AA to BLKSIZ (0x1c) reads back two
+		 * distinct values, and VERID (0x6c) says 0x5342250A on both -- measured on this
+		 * board by boardtest/cv200-mdc.bench, image 26b3e02b265f4aeb14260ed0ad3141cc.
+		 *
+		 * **Correction, and it retracts what this comment said first: neither host has a
+		 * card.** The CDETECT pair (MMC 1, SD 0) was read as "the package hangs off
+		 * SDIO1"; the vendor system's own boot log on this very board says otherwise --
+		 * `hi_mci1: eMMC/MMC/SD Device NOT detected!` with root on UBI over NAND
+		 * (docs/ar513w-probe-2026-10-21/net/dmesg.txt). With the databook polarity that
+		 * dw_mmc uses (card inserted pulls the line low, so it returns !(CDETECT & 1)),
+		 * the MMC host's 1 means "absent" -- the driver was right and my reading of the
+		 * word was wrong. The SD host's 0 is the one that would fake a card.
+		 *
+		 * Under dw_mmc the host itself is proven to the command level (image
+		 * 074451469653677c3e56bc453fb0bf6f): CMD0 completes clean (`status=0x00000004`,
+		 * CMD_DONE only) and every response-bearing command ends with
+		 * `status=0x00000100` = CMD_DONE|RTO with all-zero response words, while
+		 * pwren=1, clkdiv=0x3f (50 MHz / 2 / 63 = 396.8 kHz), clkena=0x00010001 and
+		 * cmdr=0x2000c174-style words whose bit 31 START / bit 21 UPD_CLK / bit 15 INIT
+		 * match the vendor's own encoding (himciv200_def.h:73-79). In other words the
+		 * block is powered, clocked and issuing; the bus has nothing to answer. The
+		 * interrupt is this driver's own line counting (INTID 67 -> GIC_SPI 35).
+		 *
+		 * So both hosts stay off on this board, and re-enabling one is a one-property
+		 * change for a variant that actually fits an eMMC or a slot with a card.
+		 *
+		 * The interrupt cells are the two hi_mci lines the vendor system reports at
+		 * INTID 66 and 67 (docs/ar513w-probe-2026-10-21/net/ints.txt) minus the SPI
+		 * offset, and the 67 one is confirmed by this driver's own handler counting.
+		 *
+		 * HCON (0x70) reads 0x00E44C81: bits 17..16 are 0 there, which the driver
+		 * maps to the block's own internal DMA manager, and the boot log confirms it
+		 * ("IDMAC supports 32-bit address mode", "Using internal DMA controller").
+		 * No external DMA is on this path, so the on-chip DMAC chain-transfer problem
+		 * is not a dependency of the card.
+		 *
+		 * CRG39/CRG40 carry, next to the gate, the card-clock select (bits 8..9: 75,
+		 * 100, 50, 24 MHz) and the sample/driver phase fields (himci_s40.c:4-68). The
+		 * clock provider exposes one id per host covering both enable bits, so "biu" and
+		 * "ciu" name the same cell -- which is also all the binding allows
+		 * (synopsys-dw-mshc.yaml: clocks minItems/maxItems 2, names "biu" and "ciu").
+		 * The card clock dw_mmc divides is the rate that id reports.
+		 */
+		sdio0: mmc@f9820000 {
+			compatible = "snps,dw-mshc";
+			reg = <0xf9820000 0x10000>;
+			interrupts = <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_SDIO0_CLK>,
+				 <&crg HI3716CV200_SDIO0_CLK>;
+			clock-names = "biu", "ciu";
+			bus-width = <4>;
+			max-frequency = <50000000>;
+			cap-sd-highspeed;
+			status = "disabled";
+		};
+
+		sdio1: mmc@f9830000 {
+			compatible = "snps,dw-mshc";
+			reg = <0xf9830000 0x10000>;
+			interrupts = <GIC_SPI 35 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_SDIO1_CLK>,
+				 <&crg HI3716CV200_SDIO1_CLK>;
+			clock-names = "biu", "ciu";
+			bus-width = <8>;
+			max-frequency = <50000000>;
+			cap-mmc-highspeed;
+			/*
+			 * No non-removable here, and the earlier version of this node carried
+			 * one on a false premise. dw_mci_get_cd() returns !(CDETECT & BIT(0))
+			 * (dw_mmc.c:897), which is the databook polarity -- a pulled-high,
+			 * unconnected detect reads "absent", exactly what the vendor's own boot
+			 * log concludes for this board. Forcing the host to claim a card only
+			 * made every rescan end in CMD_DONE|RTO, so the property described the
+			 * missing detect pin, not a device.
+			 */
+			/*
+			 * The rail word (0xf8a2011c) reads 0x60, the vendor's 3.3 V setting
+			 * (himci_s40.c:181-191), and nothing here writes 0x20 for 1.8 V, so the
+			 * host stays on 3.3 V signalling.
+			 */
+			no-1-8-v;
+			/*
+			 * Left disabled, and the reason is a measurement, not a guess. This was
+			 * enabled on 2026-10-24 (with non-removable) on the premise that the
+			 * production system's /proc/mtd names `block2mtd: /dev/block/mmcblk0p3`,
+			 * i.e. that a partitioned MMC sits behind this window. That premise is
+			 * contradicted by the vendor's own boot log on this very board:
+			 * `hi_mci1: eMMC/MMC/SD Device NOT detected!`
+			 * (docs/ar513w-probe-2026-10-21/net/dmesg.txt:208), with both hi_mci
+			 * interrupt rows at 0 (net/ints.txt:6-7). Our round agreed: with the host
+			 * enabled, every command on mmc1 returns CMD_DONE|RTO (-110) exactly like
+			 * the empty SD slot, so nothing answers on the bus. The block2mtd line is
+			 * therefore an artifact of that Android image's own init (its /proc/cmdline
+			 * has no block2mtd=, so it was added at runtime, and it can only have come
+			 * from the SD slot with a card present at the time).
+			 *
+			 * Keeping the host enabled would add a stream of command timeouts to
+			 * every boot for no device. What would change this verdict is a card
+			 * physically in the slot: the 2026-10-22 attempt reported one inserted and
+			 * still saw only timeouts, and that half stays open.
+			 */
+			status = "disabled";
+		};
 	};
 };
 
