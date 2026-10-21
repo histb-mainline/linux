@@ -737,6 +737,18 @@
 			clocks = <&xtal24mhz>;
 			hisilicon,power-syscon = <&sysctrl>;
 		};
+
+		/*
+		 * The vendor cipher header names this window REG_RNG_BASE_ADDR and
+		 * puts NUMBER at +4 and STAT at +8 (msp/drv/cipher/drv_cipher_reg.h:194),
+		 * which is histb-rng's RNG_CTRL/RNG_NUMBER/RNG_STAT layout, so the in-tree
+		 * driver is the whole port. It takes no clock: CRG49[0] sha_cken feeds this
+		 * block and the CRG driver raises that gate itself.
+		 */
+		rng: rng@f8005000 {
+			compatible = "hisilicon,histb-rng";
+			reg = <0xf8005000 0x1000>;
+		};
 	};
 };
 
