@@ -1080,6 +1080,41 @@
 				pause;
 			};
 		};
+
+		/*
+		 * Mali-400 MP4. The sub-block layout inside this one 64 KB window is
+		 * what lima's mali400 column already describes (gp 0x0, l2_cache0 0x1000,
+		 * pmu 0x2000, gpmmu 0x3000, ppmmu0..3 0x4000..0x7000, pp0..pp3
+		 * 0x8000/0xa000/0xc000/0xe000 -- lima_device.c:52-66), and the vendor
+		 * system's iomem table for this board lists the same ranges, so no
+		 * per-SoC table entry is needed. Every interrupt source of the GPU is
+		 * wired to a single GIC line -- the vendor's own /proc/interrupts has one
+		 * row, "126: ... Mali_GP_MMU, Mali_GP, Mali_PP0_MMU, ..." -- so the same
+		 * interrupt is named repeatedly; lima requests each of them with
+		 * IRQF_SHARED, which makes that legal.
+		 */
+		gpu: gpu@f8c00000 {
+			compatible = "hisilicon,hi3716cv200-mali", "arm,mali-400";
+			reg = <0xf8c00000 0x10000>;
+			interrupts = <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "gp", "gpmmu",
+				"pp0", "ppmmu0", "pp1", "ppmmu1",
+				"pp2", "ppmmu2", "pp3", "ppmmu3", "pmu";
+			clocks = <&crg HI3716CV200_GPU_CLK>,
+				 <&crg HI3716CV200_GPU_CLK>;
+			clock-names = "bus", "core";
+			resets = <&crg 0xd4 4>;
+		};
 	};
 };
 
