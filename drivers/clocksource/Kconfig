@@ -415,6 +415,16 @@ config ARM_TIMER_SP804
 	select CLKSRC_MMIO
 	select TIMER_OF if OF
 
+config HISTB_SMP_TIMER
+	bool "HiSilicon HiSTB per-CPU SP804 local timers"
+	depends on (ARCH_HISI && ARM) || COMPILE_TEST
+	select TIMER_OF if OF
+	help
+	  Say Y here to take the per-CPU clock events from one SP804 channel
+	  per CPU, as the vendor code for Hi3716CV200 does. This part has no
+	  working Cortex-A9 private timer or global timer, so without these
+	  channels no CPU gets a one-shot clock event and hrtimers stay off.
+
 config CLKSRC_ARM_GLOBAL_TIMER_SCHED_CLOCK
 	bool
 	depends on ARM_GLOBAL_TIMER
