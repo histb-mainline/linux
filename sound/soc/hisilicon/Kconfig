@@ -13,9 +13,12 @@ config SND_SOC_HISTB_AIAO_I2S
 	select SND_SOC_GENERIC_DMAENGINE_PCM
 	help
 	  Say Y here if you want to use the I2S ports of the AIAO audio block
-	  found on HiSilicon STB SoCs such as the Hi3798MV100 and the
-	  Hi3716CV200. Each port is an I2S master with its own clock generator and
-	  its own ring-buffer engine.
+	  found on HiSilicon STB SoCs such as the Hi3798MV100, the Hi3716CV200
+	  and the Hi3798MV200. Each port is an I2S master with its own clock
+	  generator and its own ring-buffer engine, and on these boards the
+	  transmit port wired to the HDMI transmitter is what carries its
+	  audio. The receive port taps the serial stream of that transmit port
+	  back in.
 
 config SND_SOC_HISTB_ADAC
 	tristate "HiSTB TianLai internal audio DAC"

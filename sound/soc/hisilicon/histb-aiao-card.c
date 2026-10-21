@@ -160,6 +160,7 @@ static int histb_aiao_card_probe(struct platform_device *pdev)
 static const struct of_device_id histb_aiao_card_of_match[] = {
 	{ .compatible = "hisilicon,hi3798mv100-aiao-card" },
 	{ .compatible = "hisilicon,hi3716cv200-aiao-card" },
+	{ .compatible = "hisilicon,hi3798mv200-aiao-card" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, histb_aiao_card_of_match);

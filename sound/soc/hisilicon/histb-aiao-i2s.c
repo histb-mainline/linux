@@ -161,10 +161,25 @@ enum {
 
 #define HISTB_AIAO_NO_PARTNER		HISTB_AIAO_NR_PORTS
 
+/* One DAI's hardware wiring, in the order of the HISTB_AIAO_* enum. */
+struct histb_aiao_port_spec {
+	unsigned int band;	/* index within the RX or TX band */
+	unsigned int tap;	/* receiver: TX band index it samples */
+	unsigned int partner;	/* index into histb_aiao::port */
+	bool rx;		/* this port lives in the receive band */
+};
+
+struct histb_aiao_variant {
+	const struct histb_aiao_port_spec *ports;
+	unsigned int num_ports;
+};
+
 struct histb_aiao {
 	void __iomem *base;
 	struct clk *clk;
+	struct clk *mclk;
 	struct reset_control *rst;
+	const struct histb_aiao_variant *variant;
 	struct histb_aiao_port port[HISTB_AIAO_NR_PORTS];
 };
 
@@ -190,11 +205,12 @@ static struct histb_aiao_port *histb_aiao_other(struct histb_aiao *aiao,
 	return &aiao->port[port->partner];
 }
 
-static void histb_aiao_set_clock(struct histb_aiao_port *port, unsigned int rate)
+static void histb_aiao_set_clock(struct histb_aiao_port *port, unsigned int rate,
+				 unsigned long in)
 {
 	u64 mclk = (u64)rate * AIAO_MCLK_FS * BIT(26);
 
-	writel(FIELD_GET(CRG_MCLK_DIV, DIV_ROUND_CLOSEST_ULL(mclk, AIAO_PLL_HZ)),
+	writel(FIELD_GET(CRG_MCLK_DIV, DIV_ROUND_CLOSEST_ULL(mclk, in)),
 	       port->crg + AIAO_CRG_MCLK);
 	writel(FIELD_PREP(CRG_BCLK_DIV, AIAO_BCLK_DIV_IDX) |
 	       FIELD_PREP(CRG_FSCLK_DIV, AIAO_FSCLK_DIV_IDX) | CRG_CKEN,
@@ -301,6 +317,8 @@ static int histb_aiao_hw_params(struct snd_pcm_substream *substream,
 	struct histb_aiao_port *port = histb_aiao_substream_port(aiao, substream);
 	struct histb_aiao_port *other = histb_aiao_other(aiao, port);
 	unsigned int rate = params_rate(params);
+	unsigned long in = aiao->mclk ? clk_get_rate(aiao->mclk)
+			   : AIAO_PLL_HZ;
 	int ret;
 
 	port->substream = substream;
@@ -323,7 +341,7 @@ static int histb_aiao_hw_params(struct snd_pcm_substream *substream,
 	if (ret)
 		return ret;
 
-	histb_aiao_set_clock(port, rate);
+	histb_aiao_set_clock(port, rate, in);
 
 	return 0;
 }
@@ -615,6 +633,46 @@ static const struct snd_soc_component_driver histb_aiao_component = {
 };
 
 /*
+ * hi3798mv100 and hi3716cv200 share this roster and both have been run; the
+ * port numbers are what the block is wired to, not a free choice.
+ */
+static const struct histb_aiao_port_spec hi3798mv100_ports[] = {
+	[HISTB_AIAO_HDMI_TX] = { AIAO_HDMI_TX_PORT, AIAO_HDMI_TX_PORT,
+				 HISTB_AIAO_HDMI_RX, false },
+	[HISTB_AIAO_HDMI_RX] = { AIAO_HDMI_RX_PORT, AIAO_HDMI_TX_PORT,
+				 HISTB_AIAO_HDMI_TX, true },
+	[HISTB_AIAO_DAC_TX] = { AIAO_DAC_TX_PORT, AIAO_DAC_TX_PORT,
+				HISTB_AIAO_DAC_RX, false },
+	[HISTB_AIAO_DAC_RX] = { AIAO_DAC_RX_PORT, AIAO_DAC_TX_PORT,
+				HISTB_AIAO_DAC_TX, true },
+};
+
+/*
+ * hi3798mv200 reports three transmit ports and one receive port (its
+ * HW_CAPABILITY word reads 0x03070001) and has no internal DAC. The vendor
+ * names the transmit port behind its transmitter: SndOpGetPort() maps
+ * OUTPUTPORT_HDMI0 + I2S through the chip platform, this part is S28, and that
+ * yields AIAO_PORT_TX2 = 0x12, so AIAO_TX(2) is the register block
+ * (aiao_v1_1/ao/drv_ao_op.c:64-85 with AUTIL_GetChipPlatform() at
+ * common/src/audio_util.c:1118, restated as a hard-coded AIAO_PORT_TX2 in
+ * common/src/drv_aiao_veri.c). Unverified on hardware.
+ */
+static const struct histb_aiao_port_spec hi3798mv200_ports[] = {
+	[HISTB_AIAO_HDMI_TX] = { 2, 2, HISTB_AIAO_HDMI_RX, false },
+	[HISTB_AIAO_HDMI_RX] = { 0, 2, HISTB_AIAO_HDMI_TX, true },
+};
+
+static const struct histb_aiao_variant hi3798mv100_aiao = {
+	.ports = hi3798mv100_ports,
+	.num_ports = ARRAY_SIZE(hi3798mv100_ports),
+};
+
+static const struct histb_aiao_variant hi3798mv200_aiao = {
+	.ports = hi3798mv200_ports,
+	.num_ports = ARRAY_SIZE(hi3798mv200_ports),
+};
+
+/*
  * The DAI index is the index into histb_aiao::port, so the two tables have to
  * stay in the order of the enum. The first entry keeps .id unset: the SoC core
  * then assigns the registration counter, which is 0 here anyway.
@@ -686,28 +744,15 @@ static int histb_aiao_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	aiao->base = base;
+	aiao->variant = of_device_get_match_data(dev);
 	/*
 	 * Which port is which. A receive port always runs off the generator of
 	 * the transmit port it samples, so its crg points at that one.
 	 */
-	static const struct {
-		unsigned int band;
-		unsigned int tap;
-		unsigned int partner;
-		bool rx;
-	} specs[HISTB_AIAO_NR_PORTS] = {
-		[HISTB_AIAO_HDMI_TX] = { AIAO_HDMI_TX_PORT, AIAO_HDMI_TX_PORT,
-					 HISTB_AIAO_HDMI_RX, false },
-		[HISTB_AIAO_HDMI_RX] = { AIAO_HDMI_RX_PORT, AIAO_HDMI_TX_PORT,
-					 HISTB_AIAO_HDMI_TX, true },
-		[HISTB_AIAO_DAC_TX] = { AIAO_DAC_TX_PORT, AIAO_DAC_TX_PORT,
-					HISTB_AIAO_DAC_RX, false },
-		[HISTB_AIAO_DAC_RX] = { AIAO_DAC_RX_PORT, AIAO_DAC_TX_PORT,
-					HISTB_AIAO_DAC_TX, true },
-	};
+	const struct histb_aiao_port_spec *specs = aiao->variant->ports;
 	unsigned int i;
 
-	for (i = 0; i < HISTB_AIAO_NR_PORTS; i++) {
+	for (i = 0; i < aiao->variant->num_ports; i++) {
 		struct histb_aiao_port *port = &aiao->port[i];
 
 		port->id = specs[i].band;
@@ -726,6 +771,16 @@ static int histb_aiao_probe(struct platform_device *pdev)
 	aiao->clk = devm_clk_get_enabled(dev, NULL);
 	if (IS_ERR(aiao->clk))
 		return dev_err_probe(dev, PTR_ERR(aiao->clk), "no aiao clock\n");
+
+	/*
+	 * hi3798mv200 names the clock its ports divide down to mclk, and that
+	 * divider is a fraction of whatever the input actually runs at, so the
+	 * rate comes from the clock framework. The boards without that cell
+	 * divide the AIAO PLL, whose rate is fixed and known.
+	 */
+	aiao->mclk = devm_clk_get_optional_enabled(dev, "mclk");
+	if (IS_ERR(aiao->mclk))
+		return dev_err_probe(dev, PTR_ERR(aiao->mclk), "no mclk clock\n");
 
 	aiao->rst = devm_reset_control_get_optional_exclusive(dev, NULL);
 	if (IS_ERR(aiao->rst))
@@ -765,7 +820,7 @@ static int histb_aiao_probe(struct platform_device *pdev)
 
 	ret = devm_snd_soc_register_component(dev, &histb_aiao_component,
 					      histb_aiao_dais,
-					      ARRAY_SIZE(histb_aiao_dais));
+					      aiao->variant->num_ports);
 	if (ret)
 		return dev_err_probe(dev, ret, "could not register the DAIs\n");
 
@@ -778,7 +833,7 @@ static void histb_aiao_remove(struct platform_device *pdev)
 
 	unsigned int i;
 
-	for (i = 0; i < HISTB_AIAO_NR_PORTS; i++) {
+	for (i = 0; i < aiao->variant->num_ports; i++) {
 		struct histb_aiao_port *port = &aiao->port[i];
 
 		WRITE_ONCE(port->running, false);
@@ -787,7 +842,7 @@ static void histb_aiao_remove(struct platform_device *pdev)
 	}
 
 	/* One generator per transmit port; the receivers share their tap's. */
-	for (i = 0; i < HISTB_AIAO_NR_PORTS; i++)
+	for (i = 0; i < aiao->variant->num_ports; i++)
 		if (!aiao->port[i].rx)
 			writel(0, aiao->port[i].crg + AIAO_CRG_CTRL);
 
@@ -795,8 +850,12 @@ static void histb_aiao_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id histb_aiao_of_match[] = {
-	{ .compatible = "hisilicon,hi3798mv100-aiao-i2s" },
-	{ .compatible = "hisilicon,hi3716cv200-aiao-i2s" },
+	{ .compatible = "hisilicon,hi3798mv100-aiao-i2s",
+	  .data = &hi3798mv100_aiao },
+	{ .compatible = "hisilicon,hi3716cv200-aiao-i2s",
+	  .data = &hi3798mv100_aiao },
+	{ .compatible = "hisilicon,hi3798mv200-aiao-i2s",
+	  .data = &hi3798mv200_aiao },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, histb_aiao_of_match);
