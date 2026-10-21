@@ -710,6 +710,33 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 		};
+
+		/*
+		 * The IR receiver block is the same IP as the one the in-tree
+		 * ir-hix5hd2 driver already drives: IR_IO_BASE 0xf8001000 with ENABLE
+		 * 0x00, CONFIG 0x04, BUSY 0x1c, INTM 0x28, INTS 0x2c, INTC 0x30, START
+		 * 0x34 (boot/product/driver/ir/ir.h:85 plus drv_ir_intf.c:43-57), and
+		 * the value this board's own boot left in CONFIG -- 0x3e801f0b, read
+		 * through /dev/mem -- puts 0x3e80 in the symbol-width field the driver
+		 * writes. Its interrupt is ID 79 in the vendor /proc/interrupts
+		 * (`hi_ir_std_irq`), i.e. GIC_SPI 47.
+		 *
+		 * The gate is *not* in the CRG: it is SYS_CTRL 0xf8000048 bit 4
+		 * (enable) / bit 5 (reset), which is where the driver's hix5hd2_data
+		 * clk_reg points and what this board reads as 0x00011111 (bit 4 set,
+		 * bit 5 clear = running) before anything binds. No cv200 clock provider
+		 * models that window yet, so the driver reaches it the way it was
+		 * written for hix5hd2, through the syscon; `clocks` then only carries
+		 * the 24 MHz reference the sample-time arithmetic divides by, and the
+		 * vendor's own default freq index is 23 = 24 MHz - 1 (ir.h:90).
+		 */
+		ir: ir@f8001000 {
+			compatible = "hisilicon,hi3716cv200-ir";
+			reg = <0xf8001000 0x1000>;
+			interrupts = <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&xtal24mhz>;
+			hisilicon,power-syscon = <&sysctrl>;
+		};
 	};
 };
 
