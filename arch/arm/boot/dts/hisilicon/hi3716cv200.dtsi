@@ -749,6 +749,52 @@
 			compatible = "hisilicon,histb-rng";
 			reg = <0xf8005000 0x1000>;
 		};
+
+		/*
+		 * USB2 host: two windows for one physical port set, which is how the
+		 * generic host drivers expect it -- EHCI takes high-speed, OHCI the
+		 * full/low-speed side. Both addresses are the vendor system's own
+		 * claims (`hiusb-ehci.0` 0xf9890000, `hiusb-ohci.0` 0xf9880000 in its
+		 * /proc/iomem, each one a 64 KiB window), and the interrupt IDs 98/99
+		 * in its /proc/interrupts
+		 * (`ehci_hcd:usb1`, `ohci_hcd:usb2`) are SPI 66/67 under the rule the
+		 * console uart, aiao and the MAC already confirm here.
+		 *
+		 * The clock handles are what keep the probe honest rather than what
+		 * turns the block on -- CRG46/CRG47 are raised by the clock provider
+		 * itself -- but naming them means the host drivers cannot bind before
+		 * the CRG has probed.
+		 */
+		usb2: usb@f9890000 {
+			compatible = "generic-ehci";
+			reg = <0xf9890000 0x10000>;
+			interrupts = <GIC_SPI 66 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_USB_BUS_CLK>,
+				 <&crg HI3716CV200_USB_PHY_CLK>;
+		};
+
+		usb3: usb@f9880000 {
+			compatible = "generic-ohci";
+			reg = <0xf9880000 0x10000>;
+			interrupts = <GIC_SPI 67 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_USB_BUS_CLK>,
+				 <&crg HI3716CV200_USB_PHY_CLK>;
+		};
+
+		/*
+		 * The USB2 device controller. See the header of the commit that adds it for
+		 * where each number comes from; what this node is *for* is to let dwc2 answer
+		 * the one open question -- whether this block is a Synopsys DWC2 core -- with
+		 * its own GSNPSID check instead of with the vendor driver's name.
+		 */
+		usb4: usb@f98c0000 {
+			compatible = "snps,dwc2";
+			reg = <0xf98c0000 0x40000>;
+			interrupts = <GIC_SPI 68 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_USB_BUS_CLK>;
+			clock-names = "otg";
+			dr_mode = "peripheral";
+		};
 	};
 };
 
