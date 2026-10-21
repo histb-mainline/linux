@@ -1,0 +1,322 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DTS File for the Skyworth set-top box built on Hi3798MV200H.
+ *
+ * Released under the GPLv2 only.
+ */
+
+/dts-v1/;
+
+#include "hi3798mv200.dtsi"
+
+/ {
+	model = "Skyworth set-top box with Hi3798MV200H";
+	compatible = "skyworth,hi3798mv200h-stb", "hisilicon,hi3798mv200";
+
+	aliases {
+		serial0 = &uart0;
+		mmc0 = &emmc;
+		mmc1 = &sd0;
+		ethernet0 = &femac;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x0 0x0 0x40000000>; /* 1 GiB */
+	};
+
+	spdif_tx: spdif-transmitter {
+		compatible = "linux,spdif-dit";
+		/*
+		 * of_count_phandle_with_args() has no default for this: without
+		 * the property the codec side of the link fails with "Bad phandle
+		 * in 'sound-dai'" and the card probe returns -EINVAL.
+		 */
+		#sound-dai-cells = <0>;
+	};
+
+	sound: sound {
+		compatible = "hisilicon,hi3798mv200-aiao-card";
+		model = "hi3798mv200-aiao-loopback";
+
+		playback {
+			cpu {
+				sound-dai = <&aiao 0>;
+			};
+
+			codec {
+				sound-dai = <&spdif_tx>;
+			};
+		};
+
+		capture {
+			cpu {
+				sound-dai = <&aiao 1>;
+			};
+		};
+	};
+};
+
+&emmc {
+	fifo-depth = <256>;
+	clock-frequency = <50000000>;
+	max-frequency = <150000000>;
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	non-removable;
+	status = "okay";
+};
+
+/*
+ * SD card slot.  The values are the OEM product's own for this block: its
+ * device tree gives max-frequency 0x2faf080 (50 MHz) for himciv200.SD, so the
+ * UHS modes stay off until a card is in the slot to argue with; the vendor's
+ * ldo-addr 0xf8a2011c (PERI_SD_LDO) already reads back non-zero after the
+ * bootloader, so nothing here has to drive it.
+ */
+&sd0 {
+	fifo-depth = <256>;
+	clock-frequency = <50000000>;
+	max-frequency = <50000000>;
+	bus-width = <4>;
+	cap-sd-highspeed;
+	status = "okay";
+};
+
+/*
+ * All three I2C hosts are enabled in the OEM product's own device tree, at
+ * 400 kHz each, with no pinctrl property either, so the bus functions come up
+ * as the bootloader left them; a transfer that NACKs (rather than timing out)
+ * is what shows that on this board.
+ */
+&i2c0 {
+	status = "okay";
+};
+
+&i2c1 {
+	status = "okay";
+};
+
+&i2c2 {
+	status = "okay";
+};
+
+/*
+ * The two spare serial ports.  The OEM product's device tree enables three
+ * PL011s next to the console one, and their gates are CRG26 bits 4 and 6
+ * (uart2_cken / uart3_cken), which the CRG driver exposes as clk_uart2 /
+ * clk_uart3 off the 75 MHz parent -- unlike uart0, whose functional clock is
+ * the SYS_CTRL one that also feeds the earlycon path.
+ */
+&uart2 {
+	status = "okay";
+};
+
+&uart3 {
+	status = "okay";
+};
+
+/*
+ * The third MMC host.  The OEM product's device tree calls it sdio (its
+ * alias), gives it SPI 86 and the CRG163 gate, and enables it just like the
+ * other two; its values here are the OEM's own -- 50 MHz, 4-bit, no UHS.
+ */
+&sd1 {
+	fifo-depth = <256>;
+	clock-frequency = <50000000>;
+	max-frequency = <50000000>;
+	bus-width = <4>;
+	cap-sd-highspeed;
+	status = "okay";
+};
+
+/*
+ * The GPIO controllers that answer on this part.  Measured in the vendor
+ * fastboot with the APB side clocked (CRG28 written 0x3 and read back, so a
+ * missing clock is not the reason): gpio0 and gpio2..gpio8 report Peripheral
+ * ID 0x00041061 at offset 0xfe0, while gpio1 at 0xf8b21000 and gpio9 at
+ * 0xf8b29000 read all zeroes and ignore writes -- those two slave ports are
+ * not wired on this die, so turning them on would only add a phantom gpiochip
+ * whose every line reads low.
+ */
+&gpio2 {
+	status = "okay";
+};
+
+&gpio3 {
+	status = "okay";
+};
+
+&gpio4 {
+	status = "okay";
+};
+
+&gpio5 {
+	status = "okay";
+};
+
+&gpio6 {
+	status = "okay";
+};
+
+&gpio7 {
+	status = "okay";
+};
+
+&gpio8 {
+	status = "okay";
+};
+
+&femac {
+	status = "okay";
+};
+
+/* The vendor DT and the board's MDIO scan both put the PHY at address 2. */
+&fephy {
+	reg = <2>;
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+/*
+ * IR receiver.  The remote on this box is the only user-facing input, and the
+ * dtsi's ir node is the same IP block as Hi3798CV200's (reg 0x8001000, SPI 47 --
+ * the OEM DTB here also says 0x2f, an SPI index, so the +32 INTID convention
+ * verified on this board applies).
+ *
+ * Only a clock is needed, no resets property: the gate lives in the SYS_CTRL
+ * window, not the CRG one -- SC_CLKGATE_SRST_CTRL is SYS_CTRL offset 0x48, with
+ * bit 4 ir_cken and bit 5 ir_srst_req, and ir-hix5hd2 asks for no reset control.
+ * Read on the board 0xf8000048 = 0x60681100, so the boot loader leaves IR
+ * unclocked and not held in reset; the driver's clk_prepare_enable() is what
+ * brings it up.
+ */
+&ir {
+	status = "okay";
+
+	/*
+	 * Codes transcribed from the vendor table for the Skyworth YK remote
+	 * (drivers/hisilicon/ir/ir-keymap-nec-skyworth-yk.c of the 3.18/4.4
+	 * vendor kernel, "yk-60hb tc9012").  Which scancode convention that
+	 * table speaks -- the bytes as the remote sent them, or the per-byte
+	 * bit reversal mainline's NEC decoder applies -- is settled by a key
+	 * press, not by reading.
+	 */
+	linux,rc-map-name = "rc-skyworth-yk";
+};
+
+/*
+ * AIAO audio.  The playback side is a dummy S/PDIF transmitter rather than the
+ * HDMI one because this part's display block is not ported yet, and no one has
+ * shown which of its three transmit ports reaches the transmitter.  What this
+ * shape does exercise is the block's internal loopback -- the receive port
+ * samples the serial stream the transmit port emits -- which is how the master
+ * clock divider gets pinned down.
+ */
+&aiao {
+	status = "okay";
+};
+
+/*
+ * Mali-450.  This box has the two pixel-processor variant, and the boot loader
+ * leaves CRG53 with the block in reset (0x10) and CRG73's selector at 7, so
+ * lima runs it at 200 MHz -- the same frequency the vendor's own enable
+ * sequence leaves it at when nothing asks for more.
+ */
+&gpu {
+	status = "okay";
+};
+
+/*
+ * USB 2.0 host.  The two controllers are the generic platform HCDs and the
+ * vendor's own arm64 board file enables them exactly like this (generic-ehci at
+ * 0xf9890000 with SPI 66, generic-ohci at 0xf9880000 with SPI 67, both on the
+ * CRG46 gate), so no board glue is involved on our side either.
+ *
+ * The PHY provider is the part that decides whether a port can detect a
+ * device: CRG47 bit 0 is the reference clock of both host ports, and it goes
+ * away with nothing but the provider left to claim it -- the clock framework
+ * turns off every gate no driver has enabled, the vendor fastboot had left
+ * that one on, and the ports then stall in "port reset error -110".  Turning
+ * the provider on is what hands the gate back to a driver: usb_add_hcd() walks
+ * the phys property, so phy_init() enables the reference clock and releases
+ * the power-on and per-port resets.
+ */
+&usb2_phy1 {
+	status = "okay";
+};
+
+&ehci {
+	status = "okay";
+};
+
+/*
+ * USB 3.0 is left disabled here, and not because of a missing sequence: this
+ * part does not answer the island from the bus at all.  The system controller's
+ * USB3.0 and combo-phy registers (offsets 0x134, 0x138, 0x850, 0x854) miss on
+ * the read decode, CRG44 and CRG98 read zero and mask writes -- including with
+ * the phy's mode field in PERI_CTRL set to USB3.0 -- and the controller window
+ * takes an external abort on the first read.  The board's own vendor
+ * devicetree has no xhci node either, and enabling these nodes only panics
+ * the board.
+ */
+/* &xhci       { status = "okay"; }; */
+
+/*
+ * The peripheral controller has to be enabled for its children to exist at all:
+ * of_platform_bus_create() only walks the subtree once the parent device has
+ * been created (drivers/of/platform.c, the !dev early return), and a disabled
+ * parent hides the combo phy below it -- which is why an earlier attempt at
+ * USB 3 here never even tried to release the phy's power-on reset.
+ */
+&perictrl {
+	status = "okay";
+};
+
+/*
+ * USB 3.0 host: left disabled, and not because the description is missing.
+ * Measured on board in the vendor fastboot stage (AArch32), where the writes are
+ * visible to the same tool that reads them back: CRG47 (0xf8a220bc) takes a
+ * write (0x7 written, 0x7 read), while CRG44 (0xf8a220b0) and CRG98
+ * (0xf8a22188) keep reading 0 no matter what is written -- the USB3CTRL and
+ * COMBPHY register blocks ignore writes.  Touching the DWC3 register file in
+ * that state aborts synchronously (reading 0xf98a0c10 restarts the box straight
+ * into the BootROM), and enabling the nodes from the kernel gives exactly the
+ * oops "synchronous external abort" at the first core access
+ * (dwc3_core_probe, GSBUSCFG0 0xc100), so the gates the kernel asks for never
+ * reach the hardware.  Before USB3 can be turned on, whatever clocks the
+ * USB3CTRL/COMBPHY register blocks need must be brought up first -- and note
+ * this board's own fastboot never initialises USB3 at all (CRG44=0, CRG98=0,
+ * CRG100=0 read on board), so nothing is inherited from it.
+ */
+
+&ohci {
+	status = "okay";
+};
+&uart0 {
+	status = "okay";
+};
+
+/*
+ * SP805 watchdog 0.  This is the board's self-rescue channel: there is no PSCI
+ * and no restart handler other than this one on the whole SoC, so without it a
+ * kernel panic -- or the boot stub hanging before any driver probes -- leaves
+ * the box silent in a spin loop and only pulling power brings it back to the
+ * vendor fastboot.  sp805_wdt registers a restart handler at priority 128, and
+ * the dtsi's resets = <&crg 0x178 4> is the same CRG94 bit 4 the vendor's
+ * reset_cpu() clears.  timeout-sec is the value Linux boots with; the stub arms
+ * a longer one to cover the pre-probe window and watchdog_handle_boot_enabled
+ * then stops it here.
+ */
+&wdg0 {
+	status = "okay";
+	timeout-sec = <30>;
+};
