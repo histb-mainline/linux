@@ -591,6 +591,15 @@
 		};
 
 		/*
+		 * All three numbers come from the cv200 build of the vendor AIAO
+		 * HAL (msp/drv/aiao/aiao_v1_1/common/include/hal_aiao_common.h):
+		 * AIAO_CBB_REGBASE 0xf8cd0000 with AIAO_CBB_REGBANDSIZE 0x10000,
+		 * AIAO_IRQ_NUM (84 + 32) -- which is what the board's own
+		 * /proc/interrupts shows for hi_aiao -- and CRG70 = 0x0118.
+		 * The block is gated by CRG70[0] and reset by CRG70[4].
+		 */
+
+		/*
 		 * Same IP and same window as the mv100 adapters, so the upstream
 		 * hix5hd2 bus driver drives them. Interrupt numbers are read off
 		 * the board's own vendor Android /proc/interrupts (hi_i2c0..3 =
@@ -1178,6 +1187,88 @@
 			reset-names = "venc";
 			status = "disabled";
 		};
+
+		aiao: audio@f8cd0000 {
+			compatible = "hisilicon,hi3716cv200-aiao-i2s";
+			reg = <0xf8cd0000 0x10000>;
+			interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_AIAO_CLK>;
+			resets = <&crg 0x118 4>;
+			#sound-dai-cells = <1>;
+		};
+
+		/*
+		 * The SiI9134 core behind the flattened window the board already
+		 * answered through: DEV_ID reads 0x9334 at 0xf8ce0008, i.e.
+		 * byte offset 4 * register number. Reset bits are the same ones
+		 * the mv100 node uses (hi_reg_crg.h:1198-1234 gives CRG67[9]
+		 * hdmitx_ctrl_srst_req, CRG67[8] hdmitx_ctrl_bus_srst_req and
+		 * CRG68[4] hdmitx_phy_srst_req), and the s40 interrupt is 88 + 32
+		 * (msp/drv/hdmi/hdmi_1_4/hdmi_intf_k.c:116) -- the glue polls HPD
+		 * instead. No port is described: the cv200 display block is not
+		 * ported, so this node is here to validate controller and PHY
+		 * access, not to drive a panel.
+		 */
+		/*
+		 * The output channel (vdp_v1_0 "DHD0"). Its register file is the VDP
+		 * block: the channel's own window starts at base + 0xc000 and the
+		 * whole block, graphics layers included, fits in one 64 KiB page
+		 * (HDATE_VERSION sits at +0xf000 and reads a date code on the board).
+		 * The interrupt is the vendor's own number for this block, INTID 122,
+		 * taken from the running vendor system's /proc/interrupts rather than
+		 * from mach/irqs.h, which disagrees with the board in three places.
+		 *
+		 * pix is the HD channel clock (CRG10/CRG11's word pair as the vendor's
+		 * mode table pairs it with a pixel rate), vo is the rest of CRG54's
+		 * display gates; the driver enables both before it pulses vou_srst_req,
+		 * because a reset request only reaches the block while it is clocked.
+		 */
+		vdp: display@f8cc0000 {
+			compatible = "hisilicon,hi3716cv200-vdp";
+			reg = <0xf8cc0000 0x10000>;
+			interrupts = <GIC_SPI 90 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_CLK_VO_HD>,
+				 <&crg HI3716CV200_VO_CLK>;
+			clock-names = "pix", "vo";
+			resets = <&crg 0xd8 30>;
+			status = "okay";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					vdp_out_hdmi: endpoint {
+						remote-endpoint = <&hdmi_in_vdp>;
+					};
+				};
+			};
+		};
+
+		hdmi: hdmi@f8ce0000 {
+			compatible = "hisilicon,hi3716cv200-hdmi";
+			reg = <0xf8ce0000 0x10000>;
+			interrupts = <GIC_SPI 88 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_HDMITX_CTRL_CLK>,
+				 <&crg HI3716CV200_HDMITX_PHY_CLK>;
+			clock-names = "ctrl", "phy";
+			resets = <&crg 0x10c 9>, <&crg 0x10c 8>, <&crg 0x110 4>;
+			reset-names = "base", "bus", "phy";
+			#sound-dai-cells = <0>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					hdmi_in_vdp: endpoint {
+						remote-endpoint = <&vdp_out_hdmi>;
+					};
+				};
+			};
+		};
 	};
 };
 
@@ -1190,4 +1281,65 @@
 		stdout-path = "serial0:115200n8";
 	};
 
+	/*
+	 * The internal DAC. It has no register that picks where its serial data
+	 * comes from: the vendor port map connects it to AIAO transmit port 2
+	 * (aiao_v1_1/ao/drv_ao_op.c:33-50), which is why the link below names
+	 * that port rather than any of the others.
+	 */
+	adac: audio-codec@f8a20110 {
+		compatible = "hisilicon,hi3716cv200-adac";
+		reg = <0xf8a20110 0x8>;
+		clocks = <&crg HI3716CV200_ADAC_CLK>;
+		resets = <&crg 0x114 4>;
+		#sound-dai-cells = <0>;
+	};
+
+	/*
+	 * Bring-up shape: the HDMI transmit link has no codec node, because the
+	 * cv200 HDMI transmitter driver is not ported. The card driver then asks
+	 * the core for its dummy codec, which still runs the port's ring engine
+	 * and clock divider, so the registers can be measured.
+	 */
+	sound {
+		compatible = "hisilicon,hi3716cv200-aiao-card";
+		model = "hi3716cv200-aiao";
+
+		playback {
+			cpu {
+				sound-dai = <&aiao 0>;
+			};
+
+			codec {
+				sound-dai = <&hdmi>;
+			};
+		};
+
+		capture {
+			cpu {
+				sound-dai = <&aiao 1>;
+			};
+		};
+
+		dac-playback {
+			cpu {
+				sound-dai = <&aiao 2>;
+			};
+
+			codec {
+				sound-dai = <&adac>;
+			};
+		};
+
+		/*
+		 * The tap of the line the DAC listens to, which is how the
+		 * transmit side of that link can be checked with no analog probe
+		 * on the board: capture and play at the same rate and compare.
+		 */
+		dac-capture {
+			cpu {
+				sound-dai = <&aiao 3>;
+			};
+		};
+	};
 };
