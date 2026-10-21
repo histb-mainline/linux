@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+/*
+ * HiSilicon Hi3716CV200 (2x Cortex-A9, 32-bit).
+ *
+ * Bring-up scaffolding for the AR513W board test: the node set is the one the
+ * board itself proves, either from the 3.10 vendor board file
+ * (kernel/linux-3.10.y/arch/arm/mach-s40/) or from the 4.4 vendor
+ * arch/arm/boot/dts/hi3716cv200.dts. Gates and resets come from the CRG at
+ * 0xf8a22000; the sources that have no documented PLL encoding are fixed clocks.
+ */
+
+#include <dt-bindings/clock/hisilicon,hi3716cv200-crg.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	model = "HiSilicon Hi3716CV200";
+	compatible = "hisilicon,hi3716cv200";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	xtal24mhz: xtal24mhz {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <24000000>;
+		clock-output-names = "clk24M";
+	};
+
+	/*
+	 * The fixed sources (clk_3m, clk_83p3m, clk_i2c100m) are registered by
+	 * the CRG provider, not here: a bit group reaches its source through a
+	 * clk_hw owned by that provider, and a source declared in both places
+	 * makes the second registration fail with -EEXIST, which aborts the CRG
+	 * probe and leaves every clock, reset and bus consumer of it deferred.
+	 */
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x40000000>;
+	};
+
+	/*
+	 * Not a child of the soc bus: every child of a simple-bus has to be
+	 * addressable through its parent's ranges, and this node has no
+	 * address of its own. The same shape is used at the top level by
+	 * bcm7445.dtsi and rockchip/rk3288-veyron.dtsi.
+	 */
+	reboot {
+		compatible = "syscon-reboot";
+		regmap = <&sysctrl>;
+		offset = <0x4>;
+		mask = <0xdeadbeef>;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			compatible = "arm,cortex-a9";
+			device_type = "cpu";
+			reg = <0>;
+			enable-method = "hisilicon,hi3716cv200-smp";
+		};
+
+		cpu1: cpu@1 {
+			compatible = "arm,cortex-a9";
+			device_type = "cpu";
+			reg = <1>;
+			enable-method = "hisilicon,hi3716cv200-smp";
+		};
+	};
+
+	/*
+	 * The A9 MPCore private peripheral region: SCU at offset 0 of it, the GIC
+	 * cpu interface at 0x100 (already described under the gic node). The vendor
+	 * kernel reaches the same block through REG_BASE_A9_PERI 0xF8A00000
+	 * (mach-s40/include/mach/platform.h:49).
+	 */
+	scu: scu@f8a00000 {
+		compatible = "arm,cortex-a9-scu";
+		reg = <0xf8a00000 0x100>;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		interrupt-parent = <&gic>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		gic: interrupt-controller@f8a01000 {
+			compatible = "arm,cortex-a9-gic";
+			#interrupt-cells = <3>;
+			#address-cells = <0>;
+			interrupt-controller;
+			/* dist base, cpu interface base */
+			reg = <0xf8a01000 0x1000>, <0xf8a00100 0x100>;
+		};
+
+		sysctrl: system-control@f8000000 {
+			compatible = "hisilicon,hi3716cv200-sysctrl", "syscon";
+			reg = <0xf8000000 0x1000>;
+		};
+	};
+};
