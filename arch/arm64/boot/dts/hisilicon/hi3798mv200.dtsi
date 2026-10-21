@@ -576,6 +576,39 @@
 			status = "disabled";
 		};
 
+		vdp: display@8cc0000 {
+			compatible = "hisilicon,hi3798mv200-vdp";
+			/*
+			 * The window the register file spans: the highest offset of
+			 * the VDP unit is its MMU debug block at 0xf530. The vendor
+			 * build takes this block's interrupt as INTID 122, which is
+			 * this SPI 90.
+			 */
+			reg = <0x8cc0000 0x10000>;
+			interrupts = <GIC_SPI 90 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3798MV200_VO_HD>,
+				 <&crg HI3798MV200_VO_BUS>,
+				 <&crg HI3798MV200_VO_SDATE>;
+			clock-names = "pix", "bus", "sdate";
+			resets = <&crg 0x34c 29>;
+			reset-names = "vdp";
+			hisilicon,crg = <&crg>;
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					vdp_out_hdmi: endpoint {
+						remote-endpoint = <&hdmi_in_vdp>;
+					};
+				};
+			};
+		};
+
 		aiao: audio@8cd0000 {
 			compatible = "hisilicon,hi3798mv200-aiao-i2s";
 			reg = <0x8cd0000 0x10000>;
@@ -593,6 +626,41 @@
 			resets = <&crg 0x118 4>;
 			#sound-dai-cells = <1>;
 			status = "disabled";
+		};
+
+		hdmi: hdmi@8ce0000 {
+			compatible = "hisilicon,hi3798mv200-hdmi";
+			/*
+			 * Two windows: the digital transmitter, whose register file
+			 * reaches past its 8051 block at 0x1c000, and the analog PHY
+			 * at 0x8d30000. The resets named by index below are CRG67's
+			 * controller bus, controller and SSC requests and CRG68's
+			 * TMDS request; CRG68's PHY request is pulsed by the driver
+			 * along with each divider change.
+			 */
+			reg = <0x8ce0000 0x20000>, <0x8d30000 0x1000>;
+			reg-names = "tx", "phy";
+			clocks = <&crg HI3798MV200_VO_HD>,
+				 <&crg HI3798MV200_HDMITX_PHY_TMDS_CLK>;
+			clock-names = "pix", "tmds";
+			#sound-dai-cells = <0>;
+			resets = <&crg 0x10c 6>, <&crg 0x10c 7>, <&crg 0x10c 9>,
+				 <&crg 0x110 5>;
+			hisilicon,crg = <&crg>;
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					hdmi_in_vdp: endpoint {
+						remote-endpoint = <&vdp_out_hdmi>;
+					};
+				};
+			};
 		};
 
 		gpu: gpu@9200000 {
