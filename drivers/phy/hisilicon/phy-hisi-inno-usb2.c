@@ -24,6 +24,8 @@
 
 #define PHY_TYPE_0	0
 #define PHY_TYPE_1	1
+/* Hi3798MV200: no test port, so clocks and resets are all the phy needs */
+#define PHY_TYPE_2	2
 
 #define PHY_TEST_DATA		GENMASK(7, 0)
 #define PHY_TEST_ADDR_OFFSET	8
@@ -86,6 +88,15 @@ static void hisi_inno_phy_write_reg(struct hisi_inno_phy_priv *priv,
 
 static void hisi_inno_phy_setup(struct hisi_inno_phy_priv *priv)
 {
+	/*
+	 * Hi3798MV200 has no test port: the window base is the first register
+	 * of the port's own register file, so strobing a test word there is a
+	 * plain write to it and resets the board.  Its ports come up with only
+	 * the reference clock and the resets below.
+	 */
+	if (priv->type == PHY_TYPE_2)
+		return;
+
 	/* The phy clk is controlled by the port0 register 0x06. */
 	hisi_inno_phy_write_reg(priv, 0, 0x06, PHY_CLK_ENABLE);
 	msleep(PHY_CLK_STABLE_TIME);
@@ -197,6 +208,8 @@ static const struct of_device_id hisi_inno_phy_of_match[] = {
 	  .data = (void *) PHY_TYPE_0 },
 	{ .compatible = "hisilicon,hi3798mv100-usb2-phy",
 	  .data = (void *) PHY_TYPE_1 },
+	{ .compatible = "hisilicon,hi3798mv200-usb2-phy",
+	  .data = (void *) PHY_TYPE_2 },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, hisi_inno_phy_of_match);
