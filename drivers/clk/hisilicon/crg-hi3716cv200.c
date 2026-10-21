@@ -11,6 +11,7 @@
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -354,6 +355,17 @@ static const struct hi3716cv200_bits_clock hi3716cv200_bits_clks[] = {
 	  BIT(0) | BIT(1) | BIT(4), BIT(0) | BIT(1),
 	  CLK_IS_CRITICAL, HI3716CV200_CLK_SDIO50M, },
 	/*
+	 * CRG54 (0xd8): the display channel's gates. vo_hd_cken (bit 4) is left out
+	 * because the HD pixel clock owns it, and the select/divider fields at bits
+	 * 12..29 are left alone: the vendor always programs CLOCK_DIV_2 and the
+	 * bootloader already leaves 00 there, so no consumer has anything to ask.
+	 * Bit 30 is vou_srst_req, so preparing this group also releases the reset --
+	 * which is the state the board's own live word (0x05E107FF) is in.
+	 */
+	{ HI3716CV200_VO_CLK, "clk_vo", 0xd8,
+	  (GENMASK(10, 0) & ~BIT(4)) | BIT(30), GENMASK(10, 0) & ~BIT(4),
+	  CLK_IS_CRITICAL, -1, },
+	/*
 	 * CRG24 (0x60): the NAND flash controller. Only the gate is claimed: bit 4 is
 	 * nf_srst_req and belongs to hinfc610, which requests it through the node's
 	 * `resets` cell and pulses it before configuring, and leaving it out of this
@@ -415,6 +427,283 @@ static int hi3716cv200_clk_register_bits(struct device *dev,
 }
 
 /*
+ * The HD channel pixel clock, CRG10/CRG11's hpll_ctrl0/ctrl1 pair as selected by
+ * CRG54's vo_hd_clk_sel and divided by CRG54's vo_hd_clk_div.
+ *
+ * The vendor never computes those words. hal/cv200/hal_specific_config.c keeps a
+ * table (s_stDispFormatParam) that pairs one raw (ctrl0, ctrl1) word pair with each
+ * mode, and each mode lists the horizontal and vertical totals and its refresh in
+ * 1/100 Hz, so the clock a row asks for is that product -- 2200*1125*60 = 148.5 MHz
+ * for 1080P60. The table below is that arithmetic, row by row, for the HD-channel
+ * modes; nothing here decodes a PLL field, which is deliberate: no local authority
+ * states what hpll_ctrl0's bits mean on this part.
+ *
+ * Two of the vendor's rows are left out on purpose. The SD-channel modes (576P,
+ * 480P, PAL, NTSC) pair word sets with rates that only come out if vo_sd_clk_div is
+ * moved too, and this clock feeds the HD channel alone. The two frame-packed rows
+ * (1080P24_FP and 720P60/50_FP) reuse the 1080P60 word pair at half the rate, which
+ * needs vo_hd_clk_div = 01 (/4); the vendor itself always programs CLOCK_DIV_2
+ * (hal_specific_config.c:789), as does the bootloader -- CRG54 reads vo_hd_clk_div
+ * 00 on a board that came up through fastboot -- so those rows are not offered and
+ * the divider is read, never written.
+ */
+#define CRG10_HPLL_CTRL0		0x028
+#define  CRG10_HPLL_CTRL0_MASK		GENMASK(30, 0)
+#define CRG11_HPLL_CTRL1		0x02c
+#define  CRG11_HPLL_CTRL1_MASK		GENMASK(26, 0)
+#define CRG54_VO			0x0d8
+#define  CRG54_VO_HD_CKEN		BIT(4)
+#define  CRG54_VO_HD_CLK_SEL		GENMASK(17, 16)
+#define  CRG54_VO_HD_CLK_DIV		GENMASK(19, 18)
+#define CRG84_PLL_LOCK			0x150
+#define  CRG84_PLL_LOCK_MASK		GENMASK(6, 0)
+
+struct hi3716cv200_hd_mode {
+	unsigned long	rate;
+	u32		ctrl0;
+	u32		ctrl1;
+};
+
+static const struct hi3716cv200_hd_mode hi3716cv200_hd_modes[] = {
+	{ 148500000, 0x12000000, 0x02002063 },	/* 1080P60, 1080P50, 1920x1080_60 */
+	{  74250000, 0x14000000, 0x02002063 },	/* 1080P30/25/24, 1080i50/60, 720P50/60 */
+	{  74250000, 0x13000000, 0x02008129 },	/* VESA 1280x720_60 */
+	{  25200000, 0x24000000, 0x020050a8 },	/* 861D 640x480_60 */
+	{  39790080, 0x25000000, 0x0201967a },	/* VESA 800x600_60 */
+	{  64995840, 0x15000000, 0x0201954a },	/* VESA 1024x768_60 */
+	{  83764800, 0x13000000, 0x02019417 },	/* VESA 1280x800_60 */
+	{ 107964480, 0x15000000, 0x020198c9 },	/* VESA 1280x1024_60 */
+	{  85478400, 0x13000000, 0x02032859 },	/* VESA 1360x768_60 */
+	{  85800960, 0x13000000, 0x0200a1ad },	/* VESA 1366x768_60 */
+	{ 121793760, 0x12000000, 0x020050cb },	/* VESA 1400x1050_60 */
+	{ 106700160, 0x12000000, 0x0201e42b },	/* VESA 1440x900_60 rb */
+	{  88896000, 0x14000000, 0x02006163 },	/* VESA 1440x900_60 */
+	{  97785600, 0x14000000, 0x02006187 },	/* VESA 1600x900_60 rb */
+	{ 162000000, 0x12000000, 0x02001036 },	/* VESA 1600x1200_60 */
+	{ 146361600, 0x12000000, 0x02018493 },	/* VESA 1680x1050_60, also reduced blanking */
+	{ 154128000, 0x12000000, 0x0200309a },	/* VESA 1920x1200_60 */
+	{ 234000000, 0x11000000, 0x02001027 },	/* VESA 1920x1440_60 */
+	{ 156988800, 0x12000000, 0x0200309d },	/* VESA 2048x1152_60 */
+	{ 268627200, 0x12000000, 0x020020b3 },	/* VESA 2560x1600_60 rb */
+};
+
+struct hi3716cv200_clk_hd {
+	struct clk_hw	hw;
+	void __iomem	*base;
+	struct device	*dev;
+};
+
+#define to_hi3716cv200_clk_hd(_hw) \
+	container_of(_hw, struct hi3716cv200_clk_hd, hw)
+
+/*
+ * vo_hd_clk_div, per the vendor's own field table (vdp_driver.c:13879): 00 is /2,
+ * 01 is /4, 1X is /1. The two clock-select values are not interpreted here at all;
+ * the board's 01 (hd0) is the channel this clock feeds and a different selector
+ * would mean the consumer is not using this table.
+ */
+static int hi3716cv200_hd_divider(u32 div, unsigned int *factor)
+{
+	if (div == 0x0)
+		*factor = 2;
+	else if (div == 0x1)
+		*factor = 4;
+	else if ((div & 0x2) != 0)
+		*factor = 1;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+
+static const struct hi3716cv200_hd_mode *
+hi3716cv200_hd_find_mode(struct hi3716cv200_clk_hd *clk, u32 ctrl0, u32 ctrl1)
+{
+	const struct hi3716cv200_hd_mode *mode;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(hi3716cv200_hd_modes); i++) {
+		mode = &hi3716cv200_hd_modes[i];
+		if (mode->ctrl0 == ctrl0 && mode->ctrl1 == ctrl1)
+			return mode;
+	}
+
+	return NULL;
+}
+
+static int hi3716cv200_hd_prepare(struct clk_hw *hw)
+{
+	struct hi3716cv200_clk_hd *clk = to_hi3716cv200_clk_hd(hw);
+	void __iomem *reg = clk->base + CRG54_VO;
+	u32 val = readl_relaxed(reg);
+
+	writel_relaxed(val | CRG54_VO_HD_CKEN, reg);
+
+	return 0;
+}
+
+static void hi3716cv200_hd_unprepare(struct clk_hw *hw)
+{
+	struct hi3716cv200_clk_hd *clk = to_hi3716cv200_clk_hd(hw);
+	void __iomem *reg = clk->base + CRG54_VO;
+	u32 val = readl_relaxed(reg);
+
+	writel_relaxed(val & ~CRG54_VO_HD_CKEN, reg);
+}
+
+static int hi3716cv200_hd_is_prepared(struct clk_hw *hw)
+{
+	struct hi3716cv200_clk_hd *clk = to_hi3716cv200_clk_hd(hw);
+
+	return FIELD_GET(CRG54_VO_HD_CKEN, readl_relaxed(clk->base + CRG54_VO));
+}
+
+/*
+ * The live words plus the live divider decide the answer, and a word pair that is
+ * not in the vendor table reports 0 rather than the nearest entry: a pixel clock is
+ * one of the quantities where a plausible wrong number is worse than a missing one,
+ * because the transmitter would be programmed from it.
+ */
+static unsigned long hi3716cv200_hd_recalc(struct clk_hw *hw,
+					   unsigned long parent_rate)
+{
+	struct hi3716cv200_clk_hd *clk = to_hi3716cv200_clk_hd(hw);
+	const struct hi3716cv200_hd_mode *mode;
+	unsigned int factor;
+	u32 crg54, div;
+
+	crg54 = readl_relaxed(clk->base + CRG54_VO);
+	div = FIELD_GET(CRG54_VO_HD_CLK_DIV, crg54);
+	if (hi3716cv200_hd_divider(div, &factor))
+		return 0;
+
+	mode = hi3716cv200_hd_find_mode(clk,
+				       FIELD_GET(CRG10_HPLL_CTRL0_MASK,
+						 readl_relaxed(clk->base + CRG10_HPLL_CTRL0)),
+				       FIELD_GET(CRG11_HPLL_CTRL1_MASK,
+						 readl_relaxed(clk->base + CRG11_HPLL_CTRL1)));
+	if (!mode)
+		return 0;
+
+	/*
+	 * Every row of the table is the rate that pair produces with the divider the
+	 * vendor programs (CLOCK_DIV_2), so the PLL behind it is twice the row rate.
+	 */
+	return mode->rate * 2 / factor;
+}
+
+static int hi3716cv200_hd_determine(struct clk_hw *hw,
+				    struct clk_rate_request *req)
+{
+	const struct hi3716cv200_hd_mode *mode;
+	unsigned int i;
+
+	/*
+	 * Only the rates the vendor's own table produces are achievable, and a
+	 * mode's pixel clock is exact arithmetic, so an exact match is asked for;
+	 * -EINVAL is what makes drm_mode_valid() reject a mode this chip cannot
+	 * clock instead of running it at a frequency nothing agreed to.
+	 */
+	for (i = 0; i < ARRAY_SIZE(hi3716cv200_hd_modes); i++) {
+		mode = &hi3716cv200_hd_modes[i];
+		if (mode->rate == req->rate)
+			return 0;
+	}
+
+	return -EINVAL;
+}
+
+static int hi3716cv200_hd_set_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long parent_rate)
+{
+	struct hi3716cv200_clk_hd *clk = to_hi3716cv200_clk_hd(hw);
+	const struct hi3716cv200_hd_mode *mode;
+	void __iomem *reg;
+	u32 val;
+	int ret;
+	unsigned int i;
+
+	mode = NULL;
+	for (i = 0; i < ARRAY_SIZE(hi3716cv200_hd_modes); i++) {
+		if (hi3716cv200_hd_modes[i].rate == rate) {
+			mode = &hi3716cv200_hd_modes[i];
+			break;
+		}
+	}
+	if (!mode)
+		return -EINVAL;
+
+	reg = clk->base + CRG10_HPLL_CTRL0;
+	val = readl_relaxed(reg);
+	writel_relaxed((val & ~CRG10_HPLL_CTRL0_MASK) |
+		       FIELD_PREP(CRG10_HPLL_CTRL0_MASK, mode->ctrl0), reg);
+
+	reg = clk->base + CRG11_HPLL_CTRL1;
+	val = readl_relaxed(reg);
+	writel_relaxed((val & ~CRG11_HPLL_CTRL1_MASK) |
+		       FIELD_PREP(CRG11_HPLL_CTRL1_MASK, mode->ctrl1), reg);
+
+	/*
+	 * CRG84's pll_lock is a 7-bit field with one bit per PLL and no per-PLL name
+	 * in any local header, so this waits for the word the running vendor system
+	 * reports (0x7f) rather than guessing which bit is the HD PLL. Both a vendor
+	 * boot and a mainline boot that programmed these words read back 0x7f.
+	 */
+	ret = readl_relaxed_poll_timeout(clk->base + CRG84_PLL_LOCK, val,
+					 (val & CRG84_PLL_LOCK_MASK) ==
+					 CRG84_PLL_LOCK_MASK,
+					 10, 10000);
+	if (ret)
+		dev_warn(clk->dev,
+			 "HD PLL would not lock for %lu Hz: CRG84 = %#010x\n",
+			 rate, readl(clk->base + CRG84_PLL_LOCK));
+
+	return ret;
+}
+
+static const struct clk_ops hi3716cv200_hd_clk_ops = {
+	.prepare = hi3716cv200_hd_prepare,
+	.unprepare = hi3716cv200_hd_unprepare,
+	.is_prepared = hi3716cv200_hd_is_prepared,
+	.recalc_rate = hi3716cv200_hd_recalc,
+	.determine_rate = hi3716cv200_hd_determine,
+	.set_rate = hi3716cv200_hd_set_rate,
+};
+
+static int hi3716cv200_clk_register_hd(struct device *dev, void __iomem *base,
+				       struct hisi_clock_data *data)
+{
+	struct hi3716cv200_clk_hd *clk;
+	struct clk_init_data init = {};
+	struct clk *clk_out;
+
+	clk = devm_kzalloc(dev, sizeof(*clk), GFP_KERNEL);
+	if (!clk)
+		return -ENOMEM;
+
+	init.name = "clk_vo_hd";
+	init.ops = &hi3716cv200_hd_clk_ops;
+	/*
+	 * CLK_IS_CRITICAL for the same reason as the gates above: the fastboot hands
+	 * over a live display path, and clk_disable_unused dropping vo_hd_cken mid
+	 * scan-out is the fabric deadlock already measured on this board.
+	 */
+	init.flags = CLK_IS_CRITICAL;
+	clk->base = base;
+	clk->dev = dev;
+	clk->hw.init = &init;
+
+	clk_out = devm_clk_register(dev, &clk->hw);
+	if (IS_ERR(clk_out))
+		return dev_err_probe(dev, PTR_ERR(clk_out),
+				     "failed to register clock clk_vo_hd\n");
+
+	data->clk_data.clks[HI3716CV200_CLK_VO_HD] = clk_out;
+
+	return 0;
+}
+
+/*
  * CRG70's audio clock divider feeds the AIAO block's incoming clock. It is
  * programmed once per power-up: loaden low, skipcfg = 0x10, loaden high to
  * latch. The shared aiao_v1_1 HAL does exactly this on this chip too
@@ -460,6 +749,10 @@ static struct hisi_clock_data *hi3716cv200_clk_register(struct platform_device *
 	ret = hi3716cv200_clk_register_bits(dev, hi3716cv200_bits_clks,
 					    ARRAY_SIZE(hi3716cv200_bits_clks),
 					    clk_data);
+	if (ret)
+		return ERR_PTR(ret);
+
+	ret = hi3716cv200_clk_register_hd(dev, clk_data->base, clk_data);
 	if (ret)
 		return ERR_PTR(ret);
 
