@@ -18,7 +18,10 @@ description: |
   The block carries the same register bands on every SoC of the family: the
   receive ports sit at +0x1000 and the transmit ports at +0x2000, each port
   taking 0x100 bytes, and the clock gate and soft reset sit in the same two bits
-  of the peripheral CRG. Only the Hi3798MV100 has been run.
+  of the peripheral CRG. Only the Hi3798MV100 and the Hi3716CV200 have been
+  run. The number of ports differs: hi3798mv100 carries eight of each, while
+  hi3798mv200 reports three transmit and one receive port in its HW_CAPABILITY
+  word.
 
   On hi3798mv100 the HDMI-capable port is wired inside the SoC to the HDMI
   transmitter, so the codec side needs no phandle beyond the transmitter's own
@@ -31,6 +34,7 @@ properties:
     enum:
       - hisilicon,hi3798mv100-aiao-i2s
       - hisilicon,hi3716cv200-aiao-i2s
+      - hisilicon,hi3798mv200-aiao-i2s
 
   reg:
     maxItems: 1
@@ -45,8 +49,20 @@ properties:
       tested on.
 
   clocks:
-    maxItems: 1
-    description: The block clock gate (PERI_CRG70 bit 0).
+    minItems: 1
+    items:
+      - description: The block clock gate (PERI_CRG70 bit 0).
+      - description: |
+          The master clock the ports divide down to mclk (PERI_CRG70 bit 21
+          picks between two PLL outputs on hi3798mv200). Only hi3798mv200 names
+          this one: the driver reads its rate, because the divider is a 27-bit
+          fraction of the input and lives in the port.
+
+  clock-names:
+    minItems: 1
+    items:
+      - const: aiao
+      - const: mclk
 
   resets:
     maxItems: 1
@@ -90,6 +106,19 @@ examples:
         reg = <0xf8cd0000 0x10000>;
         interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
         clocks = <&crg HI3716CV200_AIAO_CLK>;
+        resets = <&crg 0x118 4>;
+        #sound-dai-cells = <1>;
+    };
+  - |
+    #include <dt-bindings/clock/hisilicon,hi3798mv200-crg.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    audio@8cd0000 {
+        compatible = "hisilicon,hi3798mv200-aiao-i2s";
+        reg = <0x8cd0000 0x10000>;
+        interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&crg HI3798MV200_AIAO_CLK>, <&crg HI3798MV200_AIAO_MCLK_CLK>;
+        clock-names = "aiao", "mclk";
         resets = <&crg 0x118 4>;
         #sound-dai-cells = <1>;
     };
