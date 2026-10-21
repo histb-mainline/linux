@@ -174,6 +174,17 @@
 			      IRQ_TYPE_LEVEL_LOW)>;
 	};
 
+	/*
+	 * The cores' performance monitor.  The vendor tree describes no such
+	 * node for this line -- its armv7 file names a Cortex-A17 PMU with one
+	 * PPI per core -- so the PPI here is the one the in-tree Cortex-A53
+	 * boards use.
+	 */
+	pmu {
+		compatible = "arm,cortex-a53-pmu";
+		interrupts = <GIC_PPI 7 IRQ_TYPE_LEVEL_HIGH>;
+	};
+
 	soc: soc@f0000000 {
 		compatible = "simple-bus";
 		#address-cells = <1>;
@@ -185,6 +196,14 @@
 			reg = <0x8000000 0x1000>;
 			#clock-cells = <1>;
 			#reset-cells = <2>;
+		};
+
+		ir: ir@8001000 {
+			compatible = "hisilicon,hix5hd2-ir";
+			reg = <0x8001000 0x1000>;
+			interrupts = <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&sysctrl HI3798MV200_IR_CLK>;
+			status = "disabled";
 		};
 
 		gpio5: gpio@8004000 {
@@ -278,6 +297,68 @@
 					function = "emmc";
 				};
 			};
+
+			sd0_default: sd-default-state {
+				cclk-pin {
+					pins = "A3";
+
+					bias-pull-up;
+					slew-rate = <1>;
+					drive-strength = <8>;
+
+					function = "sdio";
+				};
+
+				cdata-pins {
+					pins = "B4", "C4", "A2", "B2";
+
+					bias-pull-up;
+					slew-rate = <1>;
+					drive-strength = <8>;
+
+					function = "sdio";
+				};
+
+				ccmd-pin {
+					pins = "B3";
+
+					bias-pull-up;
+					slew-rate = <1>;
+					drive-strength = <8>;
+
+					function = "sdio";
+				};
+
+				card-detect-pin {
+					pins = "C5";
+
+					bias-pull-up;
+					slew-rate = <1>;
+					drive-strength = <1>;
+
+					function = "sdio";
+				};
+
+				cwpr-pin {
+					pins = "C2";
+
+					bias-pull-up;
+					slew-rate = <1>;
+					drive-strength = <1>;
+
+					function = "sdio";
+				};
+
+				card-power-en-pin {
+					pins = "C1";
+
+					bias-pull-up;
+					slew-rate = <1>;
+					drive-strength = <1>;
+
+					function = "sdio";
+				};
+			};
 		};
 
 		crg: clock-reset-controller@8a22000 {
@@ -314,7 +395,7 @@
 			compatible = "arm,pl011", "arm,primecell";
 			reg = <0x8b02000 0x1000>;
 			interrupts = <GIC_SPI 51 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&sysctrl HI3798MV200_UART2_CLK>, <&crg HI3798MV200_APB_CLK>;
+			clocks = <&crg HI3798MV200_UART2_CLK>, <&crg HI3798MV200_APB_CLK>;
 			clock-names = "uartclk", "apb_pclk";
 			status = "disabled";
 		};
@@ -323,8 +404,48 @@
 			compatible = "arm,pl011", "arm,primecell";
 			reg = <0x8b03000 0x1000>;
 			interrupts = <GIC_SPI 52 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&sysctrl HI3798MV200_UART3_CLK>, <&crg HI3798MV200_APB_CLK>;
+			clocks = <&crg HI3798MV200_UART3_CLK>, <&crg HI3798MV200_APB_CLK>;
 			clock-names = "uartclk", "apb_pclk";
+			status = "disabled";
+		};
+
+		/*
+		 * The three I2C hosts are the same block Hi3798CV200 has, so they
+		 * take the same driver. i2c-hix5hd2 asks for one unnamed clock and
+		 * derives the SCL timing from its rate, so only the per-bus gate is
+		 * listed here; CRG27 holds each bus's enable and its soft reset as a
+		 * pair of bits, and the driver claims neither reset.
+		 */
+		i2c0: i2c@8b10000 {
+			compatible = "hisilicon,hix5hd2-i2c";
+			reg = <0x8b10000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupts = <GIC_SPI 38 IRQ_TYPE_LEVEL_HIGH>;
+			clock-frequency = <400000>;
+			clocks = <&crg HI3798MV200_I2C0_CLK>;
+			status = "disabled";
+		};
+
+		i2c1: i2c@8b11000 {
+			compatible = "hisilicon,hix5hd2-i2c";
+			reg = <0x8b11000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupts = <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>;
+			clock-frequency = <400000>;
+			clocks = <&crg HI3798MV200_I2C1_CLK>;
+			status = "disabled";
+		};
+
+		i2c2: i2c@8b12000 {
+			compatible = "hisilicon,hix5hd2-i2c";
+			reg = <0x8b12000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupts = <GIC_SPI 40 IRQ_TYPE_LEVEL_HIGH>;
+			clock-frequency = <400000>;
+			clocks = <&crg HI3798MV200_I2C2_CLK>;
 			status = "disabled";
 		};
 
@@ -455,6 +576,55 @@
 			status = "disabled";
 		};
 
+		aiao: audio@8cd0000 {
+			compatible = "hisilicon,hi3798mv200-aiao-i2s";
+			reg = <0x8cd0000 0x10000>;
+			/*
+			 * HW_CAPABILITY says this part has three transmit ports and
+			 * one receive port, and which transmit port reaches the HDMI
+			 * transmitter stays unresolved until the display port lands.
+			 * The vendor build takes the block's interrupt as INTID 116,
+			 * which is this SPI 84.
+			 */
+			interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3798MV200_AIAO_CLK>,
+				 <&crg HI3798MV200_AIAO_MCLK_CLK>;
+			clock-names = "aiao", "mclk";
+			resets = <&crg 0x118 4>;
+			#sound-dai-cells = <1>;
+			status = "disabled";
+		};
+
+		gpu: gpu@9200000 {
+			compatible = "hisilicon,hi3798mv200-mali", "arm,mali-450";
+			/*
+			 * 0x30000, not the boot code's 0x10000: lima's Mali-450 table
+			 * puts l2_cache0 at offset 0x10000 and dlbu at 0x14000
+			 * (drivers/gpu/drm/lima/lima_device.c:53 for l2_cache0 and
+			 * :74 for dlbu), so a 64 KiB region ends exactly where the
+			 * L2 registers begin, and lima_l2_cache_init() then faults on
+			 * the first word past it.  Hi3798MV100's node uses 0x30000
+			 * for the same reason.
+			 */
+			reg = <0x9200000 0x30000>;
+			/* One GIC line (SPI 94) carries every Mali source. */
+			interrupts = <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "gp", "gpmmu", "pp0", "ppmmu0",
+					  "pp1", "ppmmu1", "pmu", "pp";
+			clocks = <&crg HI3798MV200_GPU_CLK>,
+				 <&crg HI3798MV200_GPU_PP0_CLK>;
+			clock-names = "bus", "core";
+			resets = <&crg 0xd4 4>;
+			status = "disabled";
+		};
+
 		sd0: mmc@9820000 {
 			compatible = "hisilicon,hi3798mv200-dw-mshc";
 			reg = <0x9820000 0x10000>;
@@ -474,6 +644,8 @@
 			clk-phase-uhs-sdr104 = <225 135>;
 			clk-phase-uhs-ddr50 = <135 45>;
 			hisilicon,sap-dll-reg = <&crg 0x3a4>;
+			pinctrl-0 = <&sd0_default>;
+			pinctrl-names = "default";
 			status = "disabled";
 		};
 
@@ -514,38 +686,33 @@
 			status = "disabled";
 		};
 
-		usb-phy-bus@9865000 {
-			compatible = "hisilicon,hi3798mv200-usb2phy-test-bus", "syscon",
-				"simple-pm-bus";
-			reg = <0x9865000 0x1000>;
-			clocks = <&crg HI3798MV200_APB_CLK>;
-			resets = <&crg 0xbc 15>;
+		/*
+		 * The two host ports hang off one INNO PHY group whose port
+		 * registers are mapped directly here: the vendor's clock driver
+		 * names the window USB2_PHY01_REGBASE and reaches the second port
+		 * at +0x400, and CRG47 bit 0 is the single reference gate covering
+		 * both ports.  The phy needs no programming to bring a port up,
+		 * so the port children only carry their resets.
+		 */
+		usb2_phy1: usb-phy@9865000 {
+			compatible = "hisilicon,hi3798mv200-usb2-phy";
+			reg = <0x9865000 0x800>;
+			clocks = <&crg HI3798MV200_USB2_PHY1_REF_CLK>;
+			resets = <&crg 0xbc 4>;
 			#address-cells = <1>;
-			#size-cells = <1>;
-			ranges = <0x0 0x9865000 0x1000>;
+			#size-cells = <0>;
+			status = "disabled";
 
-			usb2_phy2: usb-phy {
-				compatible = "hisilicon,hi3798mv200-usb2-phy",
-					     "hisilicon,inno-usb2-phy";
-				clocks = <&crg HI3798MV200_USB2_PHY2_REF_CLK>;
-				resets = <&crg 0xbc 4>;
-				#address-cells = <1>;
-				#size-cells = <0>;
-				status = "disabled";
+			usb2_phy1_port0: phy@0 {
+				reg = <0>;
+				resets = <&crg 0xbc 8>;
+				#phy-cells = <0>;
+			};
 
-				usb2_phy2_port0: phy@0 {
-					reg = <0>;
-					resets = <&crg 0xbc 8>;
-					phy_type = "utmi";
-					#phy-cells = <0>;
-				};
-
-				usb2_phy2_port1: phy@1 {
-					reg = <1>;
-					resets = <&crg 0xbc 9>;
-					phy_type = "utmi";
-					#phy-cells = <0>;
-				};
+			usb2_phy1_port1: phy@1 {
+				reg = <1>;
+				resets = <&crg 0xbc 9>;
+				#phy-cells = <0>;
 			};
 		};
 
@@ -557,7 +724,7 @@
 				 <&crg HI3798MV200_USB2_12M_CLK>,
 				 <&crg HI3798MV200_USB2_48M_CLK>;
 			resets = <&crg 0xb8 12>;
-			phys = <&usb2_phy2_port0>, <&usb2_phy2_port1>;
+			phys = <&usb2_phy1_port0>, <&usb2_phy1_port1>;
 			status = "disabled";
 		};
 
@@ -573,7 +740,7 @@
 				 <&crg 0xb8 16>,
 				 <&crg 0xb8 13>,
 				 <&crg 0xb8 14>;
-			phys = <&usb2_phy2_port0>, <&usb2_phy2_port1>;
+			phys = <&usb2_phy1_port0>, <&usb2_phy1_port1>;
 			status = "disabled";
 		};
 
@@ -603,7 +770,7 @@
 					 <&crg HI3798MV200_USB3_SUSPEND_CLK>,
 					 <&crg HI3798MV200_USB3_REF_CLK>;
 				clock-names = "bus_early", "suspend", "ref";
-				phys = <&usb2_phy1_port2>, <&combphy PHY_TYPE_USB3>;
+				phys = <&usb2_phy2_port0>, <&combphy PHY_TYPE_USB3>;
 				phy-names = "usb2-phy", "usb3-phy";
 				maximum-speed = "super-speed";
 				dr_mode = "host";
@@ -643,36 +810,25 @@
 			};
 		};
 
-		usb-phy-bus@9960000 {
-			compatible = "hisilicon,hi3798mv200-usb2phy-test-bus", "syscon",
-				"simple-pm-bus";
-			reg = <0x9960000 0x1000>;
-			clocks = <&crg HI3798MV200_APB_CLK>;
-			resets = <&crg 0xbc 16>;
+		/* The single-port group that feeds the DWC3 core. */
+		usb2_phy2: usb-phy@9960000 {
+			compatible = "hisilicon,hi3798mv200-usb2-phy";
+			reg = <0x9960000 0x100>;
+			clocks = <&crg HI3798MV200_USB2_PHY2_REF_CLK>;
+			resets = <&crg 0xbc 6>;
 			#address-cells = <1>;
-			#size-cells = <1>;
-			ranges = <0x0 0x9960000 0x1000>;
+			#size-cells = <0>;
+			status = "disabled";
 
-			usb2_phy1: usb-phy {
-				compatible = "hisilicon,hi3798mv200-usb2-phy",
-					     "hisilicon,inno-usb2-phy";
-				clocks = <&crg HI3798MV200_USB2_PHY1_REF_CLK>;
-				resets = <&crg 0xbc 6>;
-				#address-cells = <1>;
-				#size-cells = <0>;
-				status = "disabled";
-
-				usb2_phy1_port2: phy@0 {
-					reg = <0>;
-					resets = <&crg 0xbc 10>;
-					phy_type = "utmi";
-					#phy-cells = <0>;
-				};
+			usb2_phy2_port0: phy@0 {
+				reg = <0>;
+				resets = <&crg 0xbc 10>;
+				#phy-cells = <0>;
 			};
 		};
 
 		sd1: mmc@9c40000 {
-			compatible = "hi3798mv200,dw-mshc";
+			compatible = "hisilicon,hi3798mv200-dw-mshc";
 			reg = <0x9c40000 0x10000>;
 			interrupts = <GIC_SPI 86 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&crg HI3798MV200_SDIO1_CIU_CLK>,
