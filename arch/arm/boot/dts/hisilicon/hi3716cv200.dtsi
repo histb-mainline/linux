@@ -202,5 +202,42 @@
 			compatible = "hisilicon,hi3716cv200-sysctrl", "syscon";
 			reg = <0xf8000000 0x1000>;
 		};
+
+		crg: clock-reset-controller@f8a22000 {
+			compatible = "hisilicon,hi3716cv200-crg",
+				"syscon", "simple-mfd";
+			reg = <0xf8a22000 0x400>;
+			#clock-cells = <1>;
+			#reset-cells = <2>;
+		};
+
+		/*
+		 * Same DMAC window, register set and request-line interrupt as
+		 * the Hi3798MV100 instance (msp/drv/dmac/drv_dmac.h gives
+		 * DMAC_BASE_REG 0xF9870000, DMAC_INT (30 + 32) and
+		 * DMAC_CRG_BASE 0xF8A220A4 for this chip). dma-channels is
+		 * carried over from the MV100 part and the PL08x driver honours
+		 * it: channels 0..3 have to complete transfers here.
+		 */
+		dmac: dma-controller@f9870000 {
+			compatible = "arm,pl080", "arm,primecell";
+			/*
+			 * The block reports 0x0a141080, which is bit for bit the ID
+			 * the PL08x driver reserves for Samsung's PL080S variant:
+			 * different channel configuration offset and 8-word list
+			 * items, neither of which this has.  Declare the plain PL080
+			 * ID, whose layout matches the register map here.
+			 */
+			arm,primecell-periphid = <0x00041080>;
+			reg = <0xf9870000 0x10000>;
+			interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_DMAC_CLK>;
+			clock-names = "apb_pclk";
+			resets = <&crg 0xa4 4>;
+			dma-channels = <4>;
+			#dma-cells = <2>;
+			memcpy-bus-width = <32>;
+			memcpy-burst-size = <256>;
+		};
 	};
 };
