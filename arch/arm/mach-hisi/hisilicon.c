@@ -59,3 +59,20 @@ static const char *const hi3798mv100_compat[] __initconst = {
 DT_MACHINE_START(HI3798MV100, "HiSilicon Hi3798MV100 (Flattened Device Tree)")
 	.dt_compat	= hi3798mv100_compat,
 MACHINE_END
+
+static const char *const hi3716cv200_compat[] __initconst = {
+	"hisilicon,hi3716cv200",
+	NULL,
+};
+
+/*
+ * Both aux fields are load-bearing: init_IRQ() only reaches
+ * l2x0_of_init() when one of them is non-zero, and the integrated
+ * L2C-310 is described in the DTB.  Forcing no bits leaves the
+ * controller on the driver's own defaults.
+ */
+DT_MACHINE_START(HI3716CV200, "HiSilicon Hi3716CV200 (Flattened Device Tree)")
+	.l2c_aux_val	= 0x0,
+	.l2c_aux_mask	= ~0x0,
+	.dt_compat	= hi3716cv200_compat,
+MACHINE_END
