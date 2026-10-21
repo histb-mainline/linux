@@ -589,6 +589,91 @@
 			clock-names = "wdog_clk", "apb_pclk";
 			timeout-sec = <60>;
 		};
+
+		/*
+		 * Same IP and same window as the mv100 adapters, so the upstream
+		 * hix5hd2 bus driver drives them. Interrupt numbers are read off
+		 * the board's own vendor Android /proc/interrupts (hi_i2c0..3 =
+		 * 70..73), which the console uart (81 = GIC_SPI 49) cross-checks.
+		 */
+		i2c0: i2c@f8b10000 {
+			compatible = "hisilicon,hix5hd2-i2c";
+			reg = <0xf8b10000 0x1000>;
+			interrupts = <GIC_SPI 38 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_I2C0_CLK>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		i2c1: i2c@f8b11000 {
+			compatible = "hisilicon,hix5hd2-i2c";
+			reg = <0xf8b11000 0x1000>;
+			interrupts = <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_I2C1_CLK>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		i2c2: i2c@f8b12000 {
+			compatible = "hisilicon,hix5hd2-i2c";
+			reg = <0xf8b12000 0x1000>;
+			interrupts = <GIC_SPI 40 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_I2C2_CLK>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		i2c3: i2c@f8b13000 {
+			compatible = "hisilicon,hix5hd2-i2c";
+			reg = <0xf8b13000 0x1000>;
+			interrupts = <GIC_SPI 41 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_I2C3_CLK>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		/*
+		 * The fifth adapter, which this chip's vendor header names I2C ADC:
+		 * std_i2c/drv_i2c.h gives CHIP_TYPE_hi3716cv200 I2C4_PHY_ADDR 0xF8B16000
+		 * with I2C4_IRQ (32 + 43), i.e. INTID 75 -- the same ID the vendor
+		 * system's own /proc/interrupts row carries. CRG27 gates it with the
+		 * bit 20/21 pair already modelled as HI3716CV200_I2C4_CLK. The QAM
+		 * adapter at 0xF8B17000 (INTID 76) is marked "not used" in that header,
+		 * so it stays out of the description until something on this board
+		 * asks for it.
+		 */
+		i2c4: i2c@f8b16000 {
+			compatible = "hisilicon,hix5hd2-i2c";
+			reg = <0xf8b16000 0x1000>;
+			interrupts = <GIC_SPI 43 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_I2C4_CLK>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		/*
+		 * The sixth adapter this chip has and the production system registers: the SDK
+		 * calls it QAMI2C (msp/drv/i2c/std_i2c/drv_i2c.h:104 gives 0xF8B17000, :113 the
+		 * IRQ 32+44), and its /proc/interrupts row is hi_i2c5 at INTID 76, so SPI 44.
+		 * Its clock gate is CRG27 bit 0 with the reset at bit 1 -- the family's sixth
+		 * slot (drivers/clk/hisilicon/clk-hix5hd2.c:124) and the one pair the boot hands
+		 * over held in reset along with the other five. Nothing is known to hang off
+		 * this bus on this package, which is what the bench arm has to answer.
+		 */
+		i2c5: i2c@f8b17000 {
+			compatible = "hisilicon,hix5hd2-i2c";
+			reg = <0xf8b17000 0x1000>;
+			interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_I2C5_CLK>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
 	};
 };
 
