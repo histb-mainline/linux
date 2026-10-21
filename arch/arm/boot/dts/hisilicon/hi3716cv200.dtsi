@@ -970,6 +970,116 @@
 			 */
 			status = "disabled";
 		};
+
+		/*
+		 * Port 1 of the gigabit switch fabric, the one wired to the Hi3620 side
+		 * of this board (the vendor fastboot tftp path, and the vendor Linux
+		 * eth1 with MAC ...1A:29). Same register map as the upstream
+		 * hix5hd2_gmac driver: STATION_ADDR_LOW 0x0, MAC_DUPLEX_HALF_CTRL 0x8,
+		 * PORT_MODE 0x40, PORT_EN 0x44, REC_FILT_CONTROL 0x64, RX_FQ_* 0x500+
+		 * match boot/fastboot/drivers/net/higmacv300/ctrl.h one for one, so no
+		 * new driver is needed. The interrupt is the gmac line the vendor
+		 * system's own /proc/interrupts reports (103 for gmac0, 104 for gmac1:
+		 * docs/ar513w-probe-2026-10-21/net/ints.txt), i.e. SPI 71/72. The
+		 * s40 machine header mach-s40/include/mach/irqs.h is not usable as a
+		 * table for this chip -- it puts INTNR_ETH at 32 + 51 = 83 and gives
+		 * I2C2/I2C3 the same numbers as I2C0/I2C1.
+		 */
+		/*
+		 * Port 0 is where the PHY actually hangs. Measured from my own kernel
+		 * with the MDIO single-command registers: a read of address 1 register 2
+		 * issued to 0xf98403c0 returns a value at 0xf98403c4 (0x0004 >> the
+		 * 16-bit shift the controller applies), while the identical transaction
+		 * on port 1 (0xf98413c0/0xf98413c4) reads back 0xFFFF. START (bit 20)
+		 * self-clears on both, so neither bus is stuck -- one has a device on it
+		 * and the other does not. PORT_MODE here reads 1 = PORT_MOD_100M_MII
+		 * (higmacv300/higmac.h:60-65), what the bootloader left for this port.
+		 */
+		gmac0: ethernet@f9840000 {
+			compatible = "hisilicon,hi3716cv200-gmac",
+				     "hisilicon,hisi-gmac-v1";
+			/*
+			 * Left off for now: it probes and its MDIO has a device at
+			 * address 1, but that device reads an all-zero ID and the port
+			 * stays link-down, and this board's route to the Hi3620 is the
+			 * other port. Kept in the file so the bus question can be picked
+			 * up without rederiving the register map.
+			 */
+			status = "disabled";
+			reg = <0xf9840000 0x1000>, <0xf984300c 0x4>;
+			interrupts = <GIC_SPI 71 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_GMAC0_CLK>;
+			clock-names = "mac_core";
+			resets = <&crg 0xcc 10>;
+			reset-names = "mac_ifc";
+			phy-mode = "mii";
+			phy-handle = <&phy0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			phy0: ethernet-phy@1 {
+				reg = <1>;
+			};
+		};
+
+		gmac1: ethernet@f9841000 {
+			compatible = "hisilicon,hi3716cv200-gmac",
+				     "hisilicon,hisi-gmac-v1";
+			/*
+			 * The MAC register block and the external interface control
+			 * register the driver writes port speed/duplex into: for this
+			 * port that word is HIGMAC_MACIF1_CTRL
+			 * (boot/fastboot/drivers/net/higmacv300/ctrl.c:48 -- index 1
+			 * writes MACIF1, ctrl.h:16 -- 0xF9843010).
+			 */
+			reg = <0xf9841000 0x1000>, <0xf9843010 0x4>;
+			/*
+			 * GIC interrupt ID 104. Taken from the vendor system's own
+			 * /proc/interrupts on this board (docs/ar513w-probe-2026-10-21/
+			 * raw.txt:153-159, where uart-pl011 is 81 -- the value my kernel
+			 * measures for the same device -- so that table is in interrupt
+			 * IDs, not Linux virtual numbers): gmac0 is 103, gmac1 is 104.
+			 * mach-s40/include/mach/irqs.h:39's single INTNR_ETH = 32 + 51 is
+			 * wrong the same way its I2C entries were.
+			 */
+			interrupts = <GIC_SPI 72 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_GMAC1_CLK>;
+			clock-names = "mac_core";
+			/*
+			 * CRG51 bit 11 is gsf_mac1_srst_req, which the vendor pulses
+			 * around every mac_if write (ctrl.c:22-37, `v |= 1 <<
+			 * (ld->index + 10)` commented "bit10 mac_if0"), so it is the
+			 * interface reset, not the core one; the port reset is bit 9
+			 * (gsf_p1_srst_req) and stays unowned -- board-s40.c:37-89 does
+			 * pulse bits 9 and 11 together (0x5 << (index + 8), hold 50 us)
+			 * in higmac_restart(), but only after fwd_resume() has re-applied
+			 * the fabric configuration, and measured on this board a reopen
+			 * with that pair held went the wrong way: no frame was received at
+			 * all afterwards and transmit stopped after 6 packets.
+			 */
+			resets = <&crg 0xcc 11>;
+			reset-names = "mac_ifc";
+			/*
+			 * No source available here describes the delays on this
+			 * PCB, so the port keeps plain rgmii: no tx or rx offset, no id.
+			 */
+			phy-mode = "rgmii";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/*
+			 * Measured: a single-command MDIO read of address 1 on this
+			 * port's bus (0xf98413c0/0xf98413c4) returns nothing while the
+			 * other port's bus has a device, yet the fastboot moves traffic
+			 * here -- the peer is the Hi3620's own MAC, so the link is
+			 * declared rather than negotiated.
+			 */
+			fixed-link {
+				speed = <1000>;
+				full-duplex;
+				pause;
+			};
+		};
 	};
 };
 
