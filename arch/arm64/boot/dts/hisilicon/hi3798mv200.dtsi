@@ -860,8 +860,6 @@
 			reset-names = "mac", "phy";
 			phy-handle = <&fephy>;
 			phy-connection-type = "mii";
-			// To be filled by bootloader
-			mac-address = [00 00 00 00 00 00];
 			hisilicon,phy-reset-delays-us = <10000 10000 500000>;
 			status = "disabled";
 
