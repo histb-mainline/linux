@@ -922,7 +922,7 @@
 			reg = <0xfff0000 0xe000>; /* 56 KiB IRAM at 0xFFFF0000 */
 			#address-cells = <1>;
 			#size-cells = <1>;
-			ranges = <0xfff0000 0x0 0xe000>;
+			ranges = <0x0 0xfff0000 0xe000>;
 		};
 	};
 };
