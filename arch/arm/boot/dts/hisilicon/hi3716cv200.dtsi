@@ -152,6 +152,52 @@
 			reg = <0xf8a01000 0x1000>, <0xf8a00100 0x100>;
 		};
 
+		/*
+		 * mach-s40/timer.c: cell 2 (0xf8a29000) is the clocksource,
+		 * cell 3 (+0x20) the clockevent, both on the shared "timer2/3"
+		 * line (SPI 25); cells 4 and 6 are the vendor's per-CPU local
+		 * timers and are not used here -- the per-CPU event this kernel
+		 * takes is the Cortex-A9 private timer below.
+		 */
+		timer0: timer@f8a29000 {
+			/*
+			 * "arm,sp804" only, deliberately: this instance answers its registers -- it is the
+			 * running clocksource (current_clocksource = arm,sp804) -- but its PrimeCell ID
+			 * header reads eight zero words at 0xfe0..0xffc, so listing "arm,primecell" made the
+			 * bus core create a device with id 00000000 that nothing can ever match. That orphan
+			 * was the whole of the "deferred probe pending" line this node used to print; the
+			 * driver here is the OF timer path, which never goes through the AMBA bus.
+			 */
+			compatible = "arm,sp804";
+			reg = <0xf8a29000 0x1000>;
+			interrupts = <GIC_SPI 25 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&xtal24mhz>, <&xtal24mhz>, <&xtal24mhz>;
+			clock-names = "apb_pclk", "timer0", "timer1";
+			arm,sp804-has-irq = <2>;
+		};
+
+		/*
+		 * Per-CPU clock events, one SP804 channel each: cell 4 for cpu0
+		 * and cell 6 for cpu1, with their own SPIs -- the vendor picks a
+		 * core's channel as hi_timer[(cpu * 2) + 4] and its build for this
+		 * chip has HAVE_SP804_LOCAL_TIMER=y with HAVE_ARM_LOCAL_TIMER
+		 * unset (mach-s40/timer.c:75, configs/hi3716cv200_defconfig:296).
+		 * The Cortex-A9 private timer and global timer are unusable here:
+		 * both keep the value written and never count (board-measured, and
+		 * drivers/clocksource/timer-histb-smp.c has the numbers).
+		 *
+		 * The channel rate equals the clocksource cell's, 24 MHz, measured
+		 * by counting both down over the same window, so the same fixed
+		 * crystal describes them.
+		 */
+		smp_timer: timer@f8a2a000 {
+			compatible = "hisilicon,hi3716cv200-smp-timer";
+			reg = <0xf8a2a000 0x20>, <0xf8a2b000 0x20>;
+			interrupts = <GIC_SPI 26 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 27 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&xtal24mhz>;
+		};
+
 		sysctrl: system-control@f8000000 {
 			compatible = "hisilicon,hi3716cv200-sysctrl", "syscon";
 			reg = <0xf8000000 0x1000>;
