@@ -19,6 +19,7 @@
 /* hi3798MV200 core CRG */
 enum hi3798mv200_crg_inner_clk {
 	HI3798MV200_FIXED_3M = HI3798MV200_CRG_CLK_COUNT,
+	HI3798MV200_FIXED_6M,
 	HI3798MV200_FIXED_12M,
 	HI3798MV200_FIXED_24M,
 	HI3798MV200_FIXED_25M,
@@ -32,7 +33,9 @@ enum hi3798mv200_crg_inner_clk {
 	HI3798MV200_FIXED_125M,
 	HI3798MV200_FIXED_150M,
 	HI3798MV200_FIXED_200M,
+	HI3798MV200_FIXED_300M,
 	HI3798MV200_FIXED_400M,
+	HI3798MV200_FIXED_450M,
 	HI3798MV200_FIXED_600M,
 	HI3798MV200_FIXED_800M,
 	HI3798MV200_FIXED_1200M,
@@ -51,6 +54,11 @@ static const struct hisi_fixed_rate_clock hi3798mv200_fixed_rate_clks[] = {
 	{ HI3798MV200_APB_CLK, "clk_apb", NULL, 0, 100000000, },
 	{ HI3798MV200_AHB_CLK, "clk_ahb", NULL, 0, 200000000, },
 	{ HI3798MV200_FIXED_3M, "3m", NULL, 0, 3000000, },
+	/*
+	 * DOZE mode runs the always-on domain off a divided crystal, which the
+	 * user guide gives as 6 MHz (SC_CTRL mcu_bus_clk_sel == 2).
+	 */
+	{ HI3798MV200_FIXED_6M, "6m", NULL, 0, 6000000, },
 	{ HI3798MV200_FIXED_12M, "12m", NULL, 0, 12000000, },
 	{ HI3798MV200_FIXED_24M, "24m", NULL, 0, 24000000, },
 	{ HI3798MV200_FIXED_25M, "25m", NULL, 0, 25000000, },
@@ -64,7 +72,13 @@ static const struct hisi_fixed_rate_clock hi3798mv200_fixed_rate_clks[] = {
 	{ HI3798MV200_FIXED_125M, "125m", NULL, 0, 125000000, },
 	{ HI3798MV200_FIXED_150M, "150m", NULL, 0, 150000000, },
 	{ HI3798MV200_FIXED_200M, "200m", NULL, 0, 200000000, },
+	/*
+	 * PERI_CRG22 lets the media0 and media2 bus clocks pick these, and the
+	 * user guide names both sources only by frequency.
+	 */
+	{ HI3798MV200_FIXED_300M, "300m", NULL, 0, 300000000, },
 	{ HI3798MV200_FIXED_400M, "400m", NULL, 0, 400000000, },
+	{ HI3798MV200_FIXED_450M, "450m", NULL, 0, 450000000, },
 	{ HI3798MV200_FIXED_600M, "600m", NULL, 0, 600000000, },
 	{ HI3798MV200_FIXED_800M, "800m", NULL, 0, 800000000, },
 	{ HI3798MV200_FIXED_1200M, "1200m", NULL, 0, 1200000000, },
@@ -85,6 +99,7 @@ static const char *const comphy_mux_p[] = { "25m", "100m"};
 static const char *const femac_mux_p[] = { "54m", "27m" };
 static const char *const gmac_mux_p[] = { "125m", "75m" };
 static const char *const ext_netphy_mux_p[] = { "25m", "50m" };
+static const char *const aiao_mclk_mux_p[] = { "epll", "vpll" };
 static const char *const mde1_bus_mux_p[] = { "24m", "200m" };
 static const char *const mde3_bus_mux_p[] = { "24m", "400m" };
 static u32 mux_table_1bit[] = {0, 1};
@@ -121,10 +136,33 @@ static struct hisi_mux_clock hi3798mv200_mux_clks[] = {
 		0, 0xcc, 7, 1, 0, mux_table_1bit, },
 	{ HI3798MV200_EXT_NETPHY_CLK, "ext_netphy_mux", ext_netphy_mux_p, ARRAY_SIZE(ext_netphy_mux_p),
 		0, 0xcc, 6, 1, 0, mux_table_1bit, },
+	/*
+	 * The master clock the AIAO ports divide.  PERI_CRG70 bit 21 picks the
+	 * source and the ports turn it into mclk with their own 27-bit fractional
+	 * divider, so the divider cannot be modelled here and the consumer only
+	 * ever reads this clock's rate.  Bit 21 is left as the boot loader set
+	 * it, because nothing here moves it.  The rate the ports actually divide
+	 * is half of this, which clk_aiao_mclk below describes.
+	 */
+	{ HI3798MV200_AIAO_MCLK_SEL_CLK, "clk_aiao_mclk_sel", aiao_mclk_mux_p,
+		ARRAY_SIZE(aiao_mclk_mux_p), 0, 0x118, 21, 1, 0, mux_table_1bit, },
 };
 
 static u32 mmc_phase_regvals[] = {0, 1, 2, 3, 4, 5, 6, 7};
 static u32 mmc_phase_degrees[] = {0, 45, 90, 135, 180, 225, 270, 315};
+
+/*
+ * The AIAO port dividers sit behind a halving stage: a port produces half the
+ * byte rate that the CRG70 source mux and the port divider word predict.
+ * Which stage does it is unresolved -- the manual lists an epll_fout1 output
+ * that the aiao_mclk_sel description does not mention -- but the ratio is the
+ * same on hi3798mv100, whose vendor divider tables solve against half the
+ * 491.52 MHz audio PLL.
+ */
+static struct hisi_fixed_factor_clock hi3798mv200_fixed_factor_clks[] = {
+	{ HI3798MV200_AIAO_MCLK_CLK, "clk_aiao_mclk", "clk_aiao_mclk_sel",
+		1, 2, 0, },
+};
 
 static struct hisi_phase_clock hi3798mv200_phase_clks[] = {
 	{ HI3798MV200_SDIO0_SAMPLE_CLK, "sdio0_sample", "clk_sdio0_ciu",
@@ -182,11 +220,19 @@ static const struct hisi_gate_clock hi3798mv200_gate_clks[] = {
 		CLK_SET_RATE_PARENT, 0xa0, 0, 0, },
 	{ HI3798MV200_MMC_CIU_CLK, "clk_mmc_ciu", "mmc_mux",
 		CLK_SET_RATE_PARENT, 0xa0, 1, 0, },
-	/* Ethernet */
+	/*
+	 * Ethernet.  CRG51 pairs each clock enable with a soft-reset request
+	 * bit (gsf_srst_req[0] / gsf_cken[1] and gmac_if_srst_req[2] /
+	 * gmac_if_cken[3]), so the gates are bits 1 and 3 -- the same split the
+	 * vendor clock table makes, where HIGMAC_MAC0_CLK carries mask 0x2 and
+	 * HIGMAC_MAC_IF0_CLK mask 0x8 (hi_reg_crg.h:819-827, clk-hi3798mv200.c:72-73).
+	 * The three reset request bits belong to the reset provider, which the
+	 * MAC node asks for by name.
+	 */
 	{ HI3798MV200_GMAC_CLK, "clk_gmac", "gmac_mux",
-		CLK_SET_RATE_PARENT, 0xcc, 2, 0, },
+		CLK_SET_RATE_PARENT, 0xcc, 1, 0, },
 	{ HI3798MV200_GSF_CLK, "clk_gmacif", "clk_ahb",
-		CLK_SET_RATE_PARENT, 0xcc, 0, 0, },
+		CLK_SET_RATE_PARENT, 0xcc, 3, 0, },
 	{ HI3798MV200_ETH_CLK, "clk_femac", "femac_mux",
 		CLK_SET_RATE_PARENT, 0xd0, 1, 0, },
 	{ HI3798MV200_ETH_BUS_CLK, "clk_femacif", "clk_ahb",
@@ -234,11 +280,209 @@ static const struct hisi_gate_clock hi3798mv200_gate_clks[] = {
 	/* Watchdog */
 	{ HI3798MV200_WDG0_CLK, "clk_wdg0", "clk_osc",
 		CLK_SET_RATE_PARENT, 0x178, 0, 0 },
+	/*
+	 * GPU.  The block enable is CRG53 bit 0, and the two pixel processors
+	 * have their own gates in CRG53 bits 9:8; the vendor's enable sets all
+	 * three with one write, and lima is handed only two clock specifiers,
+	 * so the PP gates are chained as each other's parents and enabling
+	 * "core" pulls PP1 then PP0.  CRG73 bits[2:0] selects the GPU PLL
+	 * frequency and stays as the boot loader left it; moving it requires
+	 * the PMC power-good sequence, so this clock has no set_rate.
+	 */
+	{ HI3798MV200_GPU_CLK, "clk_gpu", "200m",
+		0, 0xd4, 0, 0 },
+	{ HI3798MV200_GPU_PP0_CLK, "clk_gpu_pp0", "clk_gpu_pp1",
+		0, 0xd4, 8, 0 },
+	{ HI3798MV200_GPU_PP1_CLK, "clk_gpu_pp1", "200m",
+		0, 0xd4, 9, 0 },
+	/*
+	 * AIAO audio.  CRG70 bit 0 gates the block's working clock, bit 4 is its
+	 * soft reset and reaches the block only while it is clocked, and bit 22
+	 * picks that clock between 100 and 50 MHz.  Bit 22 is left as the boot
+	 * loader set it and is therefore not modelled: the gate is hung on the
+	 * fixed clock it selects, the way the GPU gate is hung on its boot
+	 * selector value.
+	 */
+	{ HI3798MV200_AIAO_CLK, "clk_aiao", "50m", 0, 0x118, 0, 0 },
 };
+
+/*
+ * Clock gates of the display path.  Each one is a single bit, because the
+ * binding header already publishes one id per gate and a bit with its own clock
+ * is what keeps one owner per bit.  These use their own provider rather than
+ * hisi_gate_clock because none of them has a parent that can be named before
+ * the pixel-clock chain is modelled, and hisi_gate_clock always reports one
+ * parent.
+ */
+struct hi3798mv200_clk_bits {
+	struct clk_hw	hw;
+	void __iomem	*reg;
+	u32		mask;
+	u32		value;
+};
+
+#define to_hi3798mv200_clk_bits(_hw) \
+	container_of(_hw, struct hi3798mv200_clk_bits, hw)
+
+static int hi3798mv200_clk_bits_prepare(struct clk_hw *hw)
+{
+	struct hi3798mv200_clk_bits *clk = to_hi3798mv200_clk_bits(hw);
+	u32 val;
+
+	val = readl_relaxed(clk->reg);
+	writel_relaxed((val & ~clk->mask) | clk->value, clk->reg);
+
+	return 0;
+}
+
+static void hi3798mv200_clk_bits_unprepare(struct clk_hw *hw)
+{
+	struct hi3798mv200_clk_bits *clk = to_hi3798mv200_clk_bits(hw);
+	u32 val;
+
+	val = readl_relaxed(clk->reg);
+	writel_relaxed(val & ~clk->mask, clk->reg);
+}
+
+static int hi3798mv200_clk_bits_is_prepared(struct clk_hw *hw)
+{
+	struct hi3798mv200_clk_bits *clk = to_hi3798mv200_clk_bits(hw);
+
+	return (readl_relaxed(clk->reg) & clk->mask) == clk->value;
+}
+
+static const struct clk_ops hi3798mv200_clk_bits_ops = {
+	.prepare = hi3798mv200_clk_bits_prepare,
+	.unprepare = hi3798mv200_clk_bits_unprepare,
+	.is_prepared = hi3798mv200_clk_bits_is_prepared,
+};
+
+struct hi3798mv200_bits_clock {
+	unsigned int	id;
+	const char	*name;
+	unsigned long	offset;
+	u32		mask;
+	u32		value;
+	unsigned long	flags;
+};
+
+/*
+ * CRG54 holds the channel gates, CRG211 the gates of the VDP's processing
+ * units, CRG67/68 those of the HDMI transmitter.  Only the gates the reset
+ * leaves raised and that the scan-out the boot loader set up runs through are
+ * marked critical, and only until the display driver asks for them itself:
+ * without that, clk_disable_unused() takes the panel's picture away at the end
+ * of boot.  CRG54 bits 5:4 have no gate on this part (the user guide and the
+ * Hi3798MV200 decode of the SDK register file agree that they are reserved), so
+ * no clock is offered for them and the ids the header still publishes for them
+ * (VO_HD, VDP_CLK) stay unimplemented.
+ */
+static const struct hi3798mv200_bits_clock hi3798mv200_bits_clks[] = {
+	/* CRG54: bus, SD channel, its SDATE encoder, VDP config access. */
+	{ HI3798MV200_VO_BUS, "clk_vo_bus", 0xd8, BIT(0), BIT(0), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VO_SD, "clk_vo_sd", 0xd8, BIT(2), BIT(2), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VO_SDATE, "clk_vo_sdate", 0xd8, BIT(3), BIT(3), CLK_IS_CRITICAL, },
+	/*
+	 * The analog DAC's gate: the boot leaves it raised and the vendor's own
+	 * display bring-up clears it, so it is not one to hold on for a
+	 * HDMI-out picture.
+	 */
+	{ HI3798MV200_VDAC_CH0_CLK, "clk_vdac_ch0", 0xd8, BIT(6), BIT(6), 0, },
+	/*
+	 * CRG54 bit 31, vdp_cfg_cken, is deliberately not modelled: it does not
+	 * take a write from the ARM side, while the rest of the same word does,
+	 * both with VDP_2 in reset and after its reset request (CRG211 bit 29)
+	 * was cleared.  A clock whose .is_prepared could never report true would
+	 * only make the display driver wait on something that does not exist.
+	 * Its id stays published but unimplemented, like VO_HD and VDP_CLK.
+	 */
+	/* CRG211: the units of the display path, all raised by the boot logo. */
+	{ HI3798MV200_VO_BP_CLK, "clk_vo_bp", 0x34c, BIT(0), BIT(0), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_G4_CLK, "clk_vdp_g4", 0x34c, BIT(1), BIT(1), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_V3_CLK, "clk_vdp_v3", 0x34c, BIT(2), BIT(2), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_SD_CLK, "clk_vdp_sd", 0x34c, BIT(3), BIT(3), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_WBC_VP_CLK, "clk_vdp_wbc_vp", 0x34c, BIT(6), BIT(6),
+	  CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_WBC_GP_CLK, "clk_vdp_wbc_gp", 0x34c, BIT(7), BIT(7),
+	  CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_WBC_HD_CLK, "clk_vdp_wbc_hd", 0x34c, BIT(8), BIT(8),
+	  CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_G3_CLK, "clk_vdp_g3", 0x34c, BIT(9), BIT(9), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_G1_CLK, "clk_vdp_g1", 0x34c, BIT(10), BIT(10), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_G0_CLK, "clk_vdp_g0", 0x34c, BIT(11), BIT(11), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_V1_CLK, "clk_vdp_v1", 0x34c, BIT(12), BIT(12), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_V0_CLK, "clk_vdp_v0", 0x34c, BIT(13), BIT(13), CLK_IS_CRITICAL, },
+	{ HI3798MV200_VDP_HD_CLK, "clk_vdp_hd", 0x34c, BIT(14), BIT(14), CLK_IS_CRITICAL, },
+	/* CRG67: the transmitter controller's six gates. */
+	{ HI3798MV200_HDMITX_SSC_CLK, "clk_hdmitx_ssc", 0x10c, BIT(0), BIT(0),
+	  CLK_IS_CRITICAL, },
+	{ HI3798MV200_HDMITX_SSC_BYPASS_CLK, "clk_hdmitx_ssc_bypass", 0x10c,
+	  BIT(1), BIT(1), CLK_IS_CRITICAL, },
+	{ HI3798MV200_HDMITX_CTRL_24M_CLK, "clk_hdmitx_os_24m", 0x10c,
+	  BIT(2), BIT(2), CLK_IS_CRITICAL, },
+	{ HI3798MV200_HDMITX_CTRL_CEC_CLK, "clk_hdmitx_cec", 0x10c,
+	  BIT(3), BIT(3), CLK_IS_CRITICAL, },
+	{ HI3798MV200_HDMITX_CTRL_60M_CLK, "clk_hdmitx_os_60m", 0x10c,
+	  BIT(4), BIT(4), CLK_IS_CRITICAL, },
+	{ HI3798MV200_HDMITX_CTRL_AS_CLK, "clk_hdmitx_as", 0x10c,
+	  BIT(5), BIT(5), CLK_IS_CRITICAL, },
+	/* CRG68: the transmitter PHY's TMDS gate; bits 4 and 5 are its resets. */
+	{ HI3798MV200_HDMITX_PHY_TMDS_CLK, "clk_hdmitx_tmds", 0x110,
+	  BIT(0), BIT(0), CLK_IS_CRITICAL, },
+};
+
+static int hi3798mv200_clk_register_bits(struct device *dev,
+					const struct hi3798mv200_bits_clock *clks,
+					int nums, struct hisi_clock_data *data)
+{
+	int i;
+
+	for (i = 0; i < nums; i++) {
+		struct hi3798mv200_clk_bits *bits;
+		struct clk_init_data init = {};
+		struct clk *clk;
+
+		bits = devm_kzalloc(dev, sizeof(*bits), GFP_KERNEL);
+		if (!bits)
+			return -ENOMEM;
+
+		init.name = clks[i].name;
+		init.ops = &hi3798mv200_clk_bits_ops;
+		init.flags = clks[i].flags;
+
+		bits->reg = data->base + clks[i].offset;
+		bits->mask = clks[i].mask;
+		bits->value = clks[i].value;
+		bits->hw.init = &init;
+
+		clk = devm_clk_register(dev, &bits->hw);
+		if (IS_ERR(clk))
+			return dev_err_probe(dev, PTR_ERR(clk),
+					     "failed to register clock %s\n",
+					     clks[i].name);
+
+		data->clk_data.clks[clks[i].id] = clk;
+	}
+
+	return 0;
+}
 
 static const struct hisi_pll_clock hi3798mv200_plls[] = {
 	{ HI3798MV200_APLL_CLK, "apll", "clk_osc", CLK_IS_CRITICAL, 0x0 },
-	{ HI3798MV200_BPLL_CLK, "bpll", "clk_osc", CLK_IS_CRITICAL, 0x8 },
+	/*
+	 * bpll is not marked critical.  It feeds the PCIe/ComboPHY 100 MHz
+	 * reference, which a boot loader may leave unprogrammed on a board that
+	 * does not use those ports, and then its two CRG words read back all
+	 * zero.  CLK_IS_CRITICAL makes clk_core_init() prepare it right away,
+	 * hisi_pll_prepare() rejects the all-zero dividers with -EINVAL and
+	 * hi3798mv200-crg fails to probe with -22 -- which takes the whole clock
+	 * provider with it, so every consumer (PL011, eMMC, FEMAC) defers and
+	 * the board prints nothing past "clk: Disabling unused clocks".  Left
+	 * non-critical it simply has no rate until a consumer that really needs
+	 * it asks, and that consumer's probe failure is then an honest, local
+	 * one.
+	 */
+	{ HI3798MV200_BPLL_CLK, "bpll", "clk_osc", 0, 0x8 },
 	{ HI3798MV200_DPLL_CLK, "dpll", "clk_osc", CLK_IS_CRITICAL, 0x10 },
 	{ HI3798MV200_VPLL_CLK, "vpll", "clk_osc", CLK_IS_CRITICAL, 0x20 },
 	{ HI3798MV200_HPLL_CLK, "hpll", "clk_osc", CLK_IS_CRITICAL, 0x28 },
@@ -289,13 +533,30 @@ static struct hisi_clock_data *hi3798mv200_clk_register(
 	if (ret)
 		goto unregister_mux;
 
-	ret = of_clk_add_provider(pdev->dev.of_node,
-			of_clk_src_onecell_get, &clk_data->clk_data);
+	ret = hi3798mv200_clk_register_bits(&pdev->dev, hi3798mv200_bits_clks,
+					    ARRAY_SIZE(hi3798mv200_bits_clks),
+					    clk_data);
 	if (ret)
 		goto unregister_gate;
 
+	/* Its parents are the muxes, so it can only come after them. */
+	ret = hisi_clk_register_fixed_factor(hi3798mv200_fixed_factor_clks,
+					     ARRAY_SIZE(hi3798mv200_fixed_factor_clks),
+					     clk_data);
+	if (ret)
+		goto unregister_gate;
+
+	ret = of_clk_add_provider(pdev->dev.of_node,
+			of_clk_src_onecell_get, &clk_data->clk_data);
+	if (ret)
+		goto unregister_fixed_factor;
+
 	return clk_data;
 
+unregister_fixed_factor:
+	hisi_clk_unregister_fixed_factor(hi3798mv200_fixed_factor_clks,
+					ARRAY_SIZE(hi3798mv200_fixed_factor_clks),
+					clk_data);
 unregister_gate:
 	hisi_clk_unregister_gate(hi3798mv200_gate_clks,
 				ARRAY_SIZE(hi3798mv200_gate_clks),
@@ -317,6 +578,9 @@ static void hi3798mv200_clk_unregister(struct platform_device *pdev)
 
 	of_clk_del_provider(pdev->dev.of_node);
 
+	hisi_clk_unregister_fixed_factor(hi3798mv200_fixed_factor_clks,
+					ARRAY_SIZE(hi3798mv200_fixed_factor_clks),
+					crg->clk_data);
 	hisi_clk_unregister_gate(hi3798mv200_gate_clks,
 				ARRAY_SIZE(hi3798mv200_gate_clks),
 				crg->clk_data);
