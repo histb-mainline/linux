@@ -40,6 +40,11 @@ properties:
           - const: skyworth,hc2910-2aghd05
           - const: hisilicon,hi3798mv200
 
+      - description: Hi3798mv200h based boards.
+        items:
+          - const: skyworth,hi3798mv200h-stb
+          - const: hisilicon,hi3798mv200
+
       - description: Hi4511 Board
         items:
           - const: hisilicon,hi3620-hi4511
