@@ -1193,11 +1193,24 @@ static int hix5hd2_dev_probe(struct platform_device *pdev)
 		goto err_mdiobus;
 	}
 
-	priv->phy_node = of_parse_phandle(node, "phy-handle", 0);
-	if (!priv->phy_node) {
-		netdev_err(ndev, "not find phy-handle\n");
-		ret = -EINVAL;
-		goto err_mdiobus;
+	/*
+	 * A port wired straight to another MAC has no PHY on its MDIO bus, so the
+	 * link is declared in the node instead; the fixed phy_device then registers
+	 * against this node and of_phy_connect() finds it by of_node, which is why
+	 * phy_node becomes the ethernet node here.
+	 */
+	if (of_phy_is_fixed_link(node)) {
+		ret = of_phy_register_fixed_link(node);
+		if (ret < 0)
+			goto err_mdiobus;
+		priv->phy_node = of_node_get(node);
+	} else {
+		priv->phy_node = of_parse_phandle(node, "phy-handle", 0);
+		if (!priv->phy_node) {
+			netdev_err(ndev, "not find phy-handle\n");
+			ret = -EINVAL;
+			goto err_mdiobus;
+		}
 	}
 
 	ndev->irq = platform_get_irq(pdev, 0);
