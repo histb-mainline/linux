@@ -17,6 +17,7 @@
 #include <linux/amba/bus.h>
 #include <linux/bitops.h>
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
@@ -145,14 +146,36 @@ static int
 wdt_restart(struct watchdog_device *wdd, unsigned long mode, void *cmd)
 {
 	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
+	/*
+	 * Two things this handler needs:
+	 *
+	 * A non-zero load.  With WDTLOAD = 0 the counter never expires, so
+	 * "reboot" ends in "Reboot failed -- System halted".  Arm ~100 ms;
+	 * the reset then follows at the second expiry, roughly 200 ms later.
+	 * A board whose DT gives neither a clock-frequency nor a clock rate has
+	 * nothing to divide, so fall back to the load the vendor's own reset
+	 * path arms this block with (WDTLOAD = 0x100, seen on Hi3798MV200H).
+	 *
+	 * The clock put back.  watchdog_stop_reboot() runs ->stop() on the way
+	 * down and wdt_disable() ends in clk_disable_unprepare(), so the writes
+	 * below would otherwise go to a block with no clock.
+	 */
+	u32 load = wdt->rate ? DIV_ROUND_UP_ULL(wdt->rate, 10) : 0x100;
+
+	/* For reset, we start the WDT clock and leave it running. */
+	clk_prepare_enable(wdt->clk);
 
 	writel_relaxed(UNLOCK, wdt->base + WDTLOCK);
 	writel_relaxed(0, wdt->base + WDTCONTROL);
-	writel_relaxed(0, wdt->base + WDTLOAD);
+	writel_relaxed(INT_MASK, wdt->base + WDTINTCLR);
+	writel_relaxed(load, wdt->base + WDTLOAD);
 	writel_relaxed(INT_ENABLE | RESET_ENABLE, wdt->base + WDTCONTROL);
 
 	/* Flush posted writes. */
 	readl_relaxed(wdt->base + WDTLOCK);
+
+	/* Wait for the reset to assert... */
+	mdelay(300);
 
 	return 0;
 }
