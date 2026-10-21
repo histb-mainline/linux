@@ -100,3 +100,17 @@ config STUB_CLK_HI3660
 	default COMMON_CLK_HI3660
 	help
 	  Build the Hisilicon Hi3660 stub clock driver.
+
+config COMMON_CLK_HI3716CV200
+	bool "Hi3716CV200 Clock Driver"
+	depends on ARCH_HISI || COMPILE_TEST
+	select RESET_HISI
+	select COMMON_CLK_HISI
+	default ARCH_HISI
+	help
+	  Build the clock driver for the Hi3798 family member Hi3716CV200. It
+	  registers the core CRG's clock gates and its reset cells. A gate whose
+	  consumer reads a rate gets the fixed-rate parent this part really puts
+	  on it (the oscillator and the named SDIO, NAND and I2C bus rates): a
+	  consumer that divides its parent reads 0 Hz without one and refuses to
+	  probe.
