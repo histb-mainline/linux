@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+/*
+ * Huawei AR513W-V3M8: Hi3716CV200 (bigfish) with 1 GiB NAND.
+ * Bring-up only -- the NAND partition table is left alone.
+ */
+
+/dts-v1/;
+
+#include "hi3716cv200.dtsi"
+
+/ {
+	model = "Huawei AR513W-V3M8 (Hi3716CV200)";
+	compatible = "hisilicon,ar513w", "hisilicon,hi3716cv200";
+};
+
+/*
+ * All four extra serial ports are turned on for the bring-up bench, which drives
+ * each one through the PL011 internal loopback (UARTCR.LBE) -- that path needs no
+ * pins, no partner and no correct baud, so a pass here says the window, the CRG26
+ * gate and the reset release all work. The console stays uart0.
+ */
+&uart1 { status = "okay"; };
+&uart2 { status = "okay"; };
+&uart3 { status = "okay"; };
+&uart4 { status = "okay"; };
+
+/* The JPEG codec pair, for the decode/encode arms. */
+&jpgd { status = "okay"; };
+&jpge { status = "okay"; };
+
+/*
+ * The video codecs. No `memory-region`: both queues are dma-contig and the
+ * driver binds the region named by that property if there is one, but this
+ * kernel already reserves a 128 MiB default CMA area (CONFIG_CMA_SIZE_MBYTES),
+ * which is what the JPEG pair on this board allocated from in the verified
+ * round. A dedicated pool would only be worth pricing in once a session needs
+ * more than that area can give.
+ */
+&vdec { status = "okay"; };
+&venc { status = "okay"; };

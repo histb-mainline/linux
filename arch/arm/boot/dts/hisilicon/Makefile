@@ -12,3 +12,5 @@ dtb-$(CONFIG_ARCH_HIX5HD2) += \
 	hisi-x5hd2-dkb.dtb
 dtb-$(CONFIG_ARCH_SD5203) += \
 	sd5203.dtb
+dtb-$(CONFIG_ARCH_HI3716CV200) += \
+	hi3716cv200-ar513w.dtb
