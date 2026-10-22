@@ -107,15 +107,6 @@
 #define  TX_TRANS_SIZE			0x94
 
 /*
- * The receive port taps the serial stream the HDMI port puts on the wire, so
- * the two share the transmit port's clock generator: capture runs at the rate
- * the tapped port plays at. The port's clock generator shares its index with
- * the port.
- */
-#define AIAO_HDMI_TX_PORT		3
-#define AIAO_HDMI_RX_PORT		0
-
-/*
  * The port divides the AIAO PLL itself. The PLL runs at 491.52 MHz and mclk is
  * encoded as a 27-bit fraction of half of that, which gives 0x00333333 for 48
  * kHz and 0x002f0a3d for 44.1 kHz at 256*fs.
@@ -133,6 +124,10 @@
 struct histb_aiao_port {
 	void __iomem *regs;
 	void __iomem *crg;
+	unsigned int id;	/* index within its own RX or TX band */
+	unsigned int tap;	/* receiver: TX band index it samples */
+	unsigned int partner;	/* index into histb_aiao::port, or HISTB_AIAO_NO_PARTNER */
+	bool rx;		/* this port lives in the receive band */
 	struct snd_pcm_substream *substream;
 	struct hrtimer tick;
 	ktime_t period;
@@ -142,17 +137,57 @@ struct histb_aiao_port {
 	bool announced;
 };
 
+/*
+ * The port numbers are not free choice: they are what the block is wired to.
+ * The receive port taps the serial stream the HDMI port puts on the wire, so
+ * the two share the transmit port's clock generator: capture runs at the rate
+ * the tapped port plays at. The internal DAC listens to the serial lane of
+ * transmit port 2 -- the vendor mapping is DAC0 -> AIAO_PORT_TX2 in
+ * aiao_v1_1/ao/drv_ao_op.c:33-50, and ADAC0/ADAC1 have no source-select bit of
+ * their own, so that one is hard-wired -- and its own generator is index 2.
+ */
+#define AIAO_HDMI_TX_PORT		3
+#define AIAO_HDMI_RX_PORT		0
+#define AIAO_DAC_TX_PORT		2
+#define AIAO_DAC_RX_PORT		1
+
+enum {
+	HISTB_AIAO_HDMI_TX,
+	HISTB_AIAO_HDMI_RX,
+	HISTB_AIAO_DAC_TX,
+	HISTB_AIAO_DAC_RX,
+	HISTB_AIAO_NR_PORTS,
+};
+
+#define HISTB_AIAO_NO_PARTNER		HISTB_AIAO_NR_PORTS
+
 struct histb_aiao {
 	void __iomem *base;
 	struct clk *clk;
 	struct reset_control *rst;
-	struct histb_aiao_port tx;
-	struct histb_aiao_port rx;
+	struct histb_aiao_port port[HISTB_AIAO_NR_PORTS];
 };
 
-static struct histb_aiao_port *histb_aiao_port(struct histb_aiao *aiao, int stream)
+/*
+ * A DAI is one port: the DAI index registered in histb_aiao_dais[] is the index
+ * into histb_aiao::port, in the same order. Selection has to be by DAI, not by
+ * stream, now that the block drives more than one transmit port.
+ */
+static struct histb_aiao_port *histb_aiao_substream_port(struct histb_aiao *aiao,
+					 struct snd_pcm_substream *substream)
 {
-	return stream == SNDRV_PCM_STREAM_CAPTURE ? &aiao->rx : &aiao->tx;
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+
+	return &aiao->port[snd_soc_rtd_to_cpu(rtd, 0)->id];
+}
+
+static struct histb_aiao_port *histb_aiao_other(struct histb_aiao *aiao,
+					 struct histb_aiao_port *port)
+{
+	if (port->partner == HISTB_AIAO_NO_PARTNER)
+		return NULL;
+
+	return &aiao->port[port->partner];
 }
 
 static void histb_aiao_set_clock(struct histb_aiao_port *port, unsigned int rate)
@@ -166,25 +201,36 @@ static void histb_aiao_set_clock(struct histb_aiao_port *port, unsigned int rate
 	       port->crg + AIAO_CRG_CTRL);
 }
 
+/*
+ * One nibble per port in the two switch registers, so the mask only exists once
+ * the port is known at run time -- which rules out FIELD_PREP() (it requires a
+ * build-time-constant mask) and this RMW is the replacement.
+ */
+static void histb_aiao_set_bclk_source(struct histb_aiao *aiao, unsigned int reg,
+				       unsigned int port, unsigned int src)
+{
+	u32 mask = SWITCH_BCLK_SEL(port);
+	u32 val = readl(aiao->base + reg);
+
+	val = (val & ~mask) | ((src << (port * 4)) & mask);
+	writel(val, aiao->base + reg);
+}
+
 static int histb_aiao_tx_hw_params(struct snd_pcm_substream *substream,
 				   struct snd_pcm_hw_params *params,
-				   struct histb_aiao *aiao)
+				   struct histb_aiao *aiao,
+				   struct histb_aiao_port *port)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct histb_aiao_port *port = &aiao->tx;
 	unsigned int period = params_period_bytes(params);
-	u32 val;
 
 	/*
-	 * Route this port's bit clock and word select to its own clock
+	 * Route this port's bit clock and frame sync to its own clock
 	 * generator; without that the port is enabled and clocked but never
 	 * advances TX_BUFF_RPTR.
 	 */
-	val = readl(aiao->base + AIAO_SWITCH_TX_BCLK);
-	val &= ~SWITCH_BCLK_SEL(AIAO_HDMI_TX_PORT);
-	val |= FIELD_PREP(SWITCH_BCLK_SEL(AIAO_HDMI_TX_PORT),
-			  AIAO_TX_CRG_SRC(AIAO_HDMI_TX_PORT));
-	writel(val, aiao->base + AIAO_SWITCH_TX_BCLK);
+	histb_aiao_set_bclk_source(aiao, AIAO_SWITCH_TX_BCLK, port->id,
+				   AIAO_TX_CRG_SRC(port->id));
 
 	/*
 	 * I2S, 16-bit, two channels, one bit of delay before the first sample,
@@ -192,7 +238,7 @@ static int histb_aiao_tx_hw_params(struct snd_pcm_substream *substream,
 	 */
 	writel(FIELD_PREP(TX_MODE, 0) | FIELD_PREP(TX_PRECISION, 1) |
 	       FIELD_PREP(TX_CH_NUM, 1) | FIELD_PREP(TX_SD_OFFSET, 1) |
-	       FIELD_PREP(TX_SD_SOURCE_SEL, AIAO_HDMI_TX_PORT),
+	       FIELD_PREP(TX_SD_SOURCE_SEL, port->id),
 	       port->regs + TX_IF_ATTRI);
 	/* The port's mute/volume stage stays bypassed; bit0 there would silence. */
 	writel(TX_BYPASS_EN, port->regs + TX_DSP_CTRL);
@@ -216,28 +262,24 @@ static int histb_aiao_tx_hw_params(struct snd_pcm_substream *substream,
 
 static int histb_aiao_rx_hw_params(struct snd_pcm_substream *substream,
 				   struct snd_pcm_hw_params *params,
-				   struct histb_aiao *aiao)
+				   struct histb_aiao *aiao,
+				   struct histb_aiao_port *port)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct histb_aiao_port *port = &aiao->rx;
 	unsigned int size = params_buffer_bytes(params);
 	unsigned int period = params_period_bytes(params);
-	u32 val;
 
 	/*
 	 * Sample the tapped stream with the generator that produced it, so that
 	 * receiver and transmitter share one clock domain: the captured frames
 	 * then land where the transmitter put them.
 	 */
-	val = readl(aiao->base + AIAO_SWITCH_RX_BCLK);
-	val &= ~SWITCH_BCLK_SEL(AIAO_HDMI_RX_PORT);
-	val |= FIELD_PREP(SWITCH_BCLK_SEL(AIAO_HDMI_RX_PORT),
-			  AIAO_TX_CRG_SRC(AIAO_HDMI_TX_PORT));
-	writel(val, aiao->base + AIAO_SWITCH_RX_BCLK);
+	histb_aiao_set_bclk_source(aiao, AIAO_SWITCH_RX_BCLK, port->id,
+				   AIAO_TX_CRG_SRC(port->tap));
 
 	writel(FIELD_PREP(RX_MODE, 0) | FIELD_PREP(RX_PRECISION, 1) |
 	       FIELD_PREP(RX_CH_NUM, 1) | FIELD_PREP(RX_SD_OFFSET, 1) |
-	       FIELD_PREP(RX_SD_SOURCE_SEL, AIAO_HDMI_TX_PORT),
+	       FIELD_PREP(RX_SD_SOURCE_SEL, port->tap),
 	       port->regs + RX_IF_ATTRI);
 	writel(RX_BYPASS_EN, port->regs + RX_DSP_CTRL);
 
@@ -256,8 +298,8 @@ static int histb_aiao_hw_params(struct snd_pcm_substream *substream,
 				struct snd_soc_dai *dai)
 {
 	struct histb_aiao *aiao = snd_soc_dai_get_drvdata(dai);
-	struct histb_aiao_port *port = histb_aiao_port(aiao, substream->stream);
-	struct histb_aiao_port *other = histb_aiao_port(aiao, !substream->stream);
+	struct histb_aiao_port *port = histb_aiao_substream_port(aiao, substream);
+	struct histb_aiao_port *other = histb_aiao_other(aiao, port);
 	unsigned int rate = params_rate(params);
 	int ret;
 
@@ -267,7 +309,7 @@ static int histb_aiao_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 
 	/* One generator feeds both directions, so they cannot run apart. */
-	if (other->rate && other->rate != rate)
+	if (other && other->rate && other->rate != rate)
 		return -EINVAL;
 	port->rate = rate;
 
@@ -275,9 +317,9 @@ static int histb_aiao_hw_params(struct snd_pcm_substream *substream,
 					   NSEC_PER_SEC, rate));
 
 	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
-		ret = histb_aiao_rx_hw_params(substream, params, aiao);
+		ret = histb_aiao_rx_hw_params(substream, params, aiao, port);
 	else
-		ret = histb_aiao_tx_hw_params(substream, params, aiao);
+		ret = histb_aiao_tx_hw_params(substream, params, aiao, port);
 	if (ret)
 		return ret;
 
@@ -290,7 +332,7 @@ static int histb_aiao_hw_free(struct snd_pcm_substream *substream,
 			      struct snd_soc_dai *dai)
 {
 	struct histb_aiao *aiao = snd_soc_dai_get_drvdata(dai);
-	struct histb_aiao_port *port = histb_aiao_port(aiao, substream->stream);
+	struct histb_aiao_port *port = histb_aiao_substream_port(aiao, substream);
 
 	port->substream = NULL;
 	port->rate = 0;
@@ -392,7 +434,7 @@ static int histb_aiao_trigger(struct snd_pcm_substream *substream, int cmd,
 			      struct snd_soc_dai *dai)
 {
 	struct histb_aiao *aiao = snd_soc_dai_get_drvdata(dai);
-	struct histb_aiao_port *port = histb_aiao_port(aiao, substream->stream);
+	struct histb_aiao_port *port = histb_aiao_substream_port(aiao, substream);
 	bool capture = substream->stream == SNDRV_PCM_STREAM_CAPTURE;
 	void __iomem *dsp = port->regs + (capture ? RX_DSP_CTRL : TX_DSP_CTRL);
 	u32 bypass = capture ? RX_BYPASS_EN : TX_BYPASS_EN;
@@ -449,7 +491,7 @@ static snd_pcm_uframes_t histb_aiao_pointer(struct snd_soc_component *component,
 {
 	struct histb_aiao *aiao = snd_soc_component_get_drvdata(component);
 
-	return histb_aiao_port(aiao, substream->stream)->pos;
+	return histb_aiao_substream_port(aiao, substream)->pos;
 }
 
 /*
@@ -499,7 +541,8 @@ static int histb_aiao_pcm_open(struct snd_soc_component *component,
 static int histb_aiao_pcm_tx_ack(struct histb_aiao *aiao,
 				 struct snd_pcm_substream *substream)
 {
-	histb_aiao_tx_commit(&aiao->tx, substream->runtime);
+	histb_aiao_tx_commit(histb_aiao_substream_port(aiao, substream),
+			     substream->runtime);
 
 	return 0;
 }
@@ -514,11 +557,12 @@ static int histb_aiao_pcm_rx_ack(struct histb_aiao *aiao,
 				 struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct histb_aiao_port *port = histb_aiao_substream_port(aiao, substream);
 	u32 rptr = frames_to_bytes(runtime,
 				   runtime->control->appl_ptr % runtime->buffer_size);
 
-	writel(rptr, aiao->rx.regs + RX_BUFF_RPTR);
-	writel(RX_ENABLE | RX_BYPASS_EN, aiao->rx.regs + RX_DSP_CTRL);
+	writel(rptr, port->regs + RX_BUFF_RPTR);
+	writel(RX_ENABLE | RX_BYPASS_EN, port->regs + RX_DSP_CTRL);
 
 	return 0;
 }
@@ -538,7 +582,7 @@ static int histb_aiao_pcm_prepare(struct snd_soc_component *component,
 				  struct snd_pcm_substream *substream)
 {
 	struct histb_aiao *aiao = snd_soc_component_get_drvdata(component);
-	struct histb_aiao_port *port = histb_aiao_port(aiao, substream->stream);
+	struct histb_aiao_port *port = histb_aiao_substream_port(aiao, substream);
 	bool capture = substream->stream == SNDRV_PCM_STREAM_CAPTURE;
 	unsigned int off = capture ? RX_BUFF_RPTR : TX_BUFF_RPTR;
 	unsigned int woff = capture ? RX_BUFF_WPTR : TX_BUFF_WPTR;
@@ -570,6 +614,11 @@ static const struct snd_soc_component_driver histb_aiao_component = {
 	.pcm_new = histb_aiao_pcm_new,
 };
 
+/*
+ * The DAI index is the index into histb_aiao::port, so the two tables have to
+ * stay in the order of the enum. The first entry keeps .id unset: the SoC core
+ * then assigns the registration counter, which is 0 here anyway.
+ */
 static struct snd_soc_dai_driver histb_aiao_dais[] = {
 	{
 		.name = "aiao-i2s",
@@ -583,9 +632,34 @@ static struct snd_soc_dai_driver histb_aiao_dais[] = {
 		.ops = &histb_aiao_dai_ops,
 	},
 	{
+		.id = HISTB_AIAO_HDMI_RX,
 		.name = "aiao-i2s-in",
 		.capture = {
 			.stream_name = "Capture",
+			.channels_min = 2,
+			.channels_max = 2,
+			.rates = SNDRV_PCM_RATE_8000_192000,
+			.formats = SNDRV_PCM_FMTBIT_S16_LE,
+		},
+		.ops = &histb_aiao_dai_ops,
+	},
+	{
+		.id = HISTB_AIAO_DAC_TX,
+		.name = "aiao-i2s-dac",
+		.playback = {
+			.stream_name = "DAC Playback",
+			.channels_min = 2,
+			.channels_max = 2,
+			.rates = SNDRV_PCM_RATE_8000_192000,
+			.formats = SNDRV_PCM_FMTBIT_S16_LE,
+		},
+		.ops = &histb_aiao_dai_ops,
+	},
+	{
+		.id = HISTB_AIAO_DAC_RX,
+		.name = "aiao-i2s-dac-in",
+		.capture = {
+			.stream_name = "DAC Capture",
 			.channels_min = 2,
 			.channels_max = 2,
 			.rates = SNDRV_PCM_RATE_8000_192000,
@@ -612,14 +686,41 @@ static int histb_aiao_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	aiao->base = base;
-	aiao->tx.regs = base + AIAO_TX(AIAO_HDMI_TX_PORT);
-	aiao->tx.crg = base + AIAO_TX_CRG(AIAO_HDMI_TX_PORT);
-	aiao->rx.regs = base + AIAO_RX(AIAO_HDMI_RX_PORT);
-	aiao->rx.crg = aiao->tx.crg;
-	hrtimer_setup(&aiao->tx.tick, histb_aiao_period_tick, CLOCK_MONOTONIC,
-		      HRTIMER_MODE_REL_SOFT);
-	hrtimer_setup(&aiao->rx.tick, histb_aiao_period_tick, CLOCK_MONOTONIC,
-		      HRTIMER_MODE_REL_SOFT);
+	/*
+	 * Which port is which. A receive port always runs off the generator of
+	 * the transmit port it samples, so its crg points at that one.
+	 */
+	static const struct {
+		unsigned int band;
+		unsigned int tap;
+		unsigned int partner;
+		bool rx;
+	} specs[HISTB_AIAO_NR_PORTS] = {
+		[HISTB_AIAO_HDMI_TX] = { AIAO_HDMI_TX_PORT, AIAO_HDMI_TX_PORT,
+					 HISTB_AIAO_HDMI_RX, false },
+		[HISTB_AIAO_HDMI_RX] = { AIAO_HDMI_RX_PORT, AIAO_HDMI_TX_PORT,
+					 HISTB_AIAO_HDMI_TX, true },
+		[HISTB_AIAO_DAC_TX] = { AIAO_DAC_TX_PORT, AIAO_DAC_TX_PORT,
+					HISTB_AIAO_DAC_RX, false },
+		[HISTB_AIAO_DAC_RX] = { AIAO_DAC_RX_PORT, AIAO_DAC_TX_PORT,
+					HISTB_AIAO_DAC_TX, true },
+	};
+	unsigned int i;
+
+	for (i = 0; i < HISTB_AIAO_NR_PORTS; i++) {
+		struct histb_aiao_port *port = &aiao->port[i];
+
+		port->id = specs[i].band;
+		port->tap = specs[i].tap;
+		port->partner = specs[i].partner;
+		port->rx = specs[i].rx;
+		port->regs = base + (specs[i].rx ? AIAO_RX(port->id) :
+						     AIAO_TX(port->id));
+		port->crg = base + AIAO_TX_CRG(specs[i].rx ? port->tap :
+						 port->id);
+		hrtimer_setup(&port->tick, histb_aiao_period_tick, CLOCK_MONOTONIC,
+			      HRTIMER_MODE_REL_SOFT);
+	}
 	platform_set_drvdata(pdev, aiao);
 
 	aiao->clk = devm_clk_get_enabled(dev, NULL);
@@ -675,13 +776,21 @@ static void histb_aiao_remove(struct platform_device *pdev)
 {
 	struct histb_aiao *aiao = platform_get_drvdata(pdev);
 
-	WRITE_ONCE(aiao->tx.running, false);
-	WRITE_ONCE(aiao->rx.running, false);
-	hrtimer_cancel(&aiao->tx.tick);
-	hrtimer_cancel(&aiao->rx.tick);
-	writel(0, aiao->tx.regs + TX_DSP_CTRL);
-	writel(0, aiao->rx.regs + RX_DSP_CTRL);
-	writel(0, aiao->tx.crg + AIAO_CRG_CTRL);
+	unsigned int i;
+
+	for (i = 0; i < HISTB_AIAO_NR_PORTS; i++) {
+		struct histb_aiao_port *port = &aiao->port[i];
+
+		WRITE_ONCE(port->running, false);
+		hrtimer_cancel(&port->tick);
+		writel(0, port->regs + (port->rx ? RX_DSP_CTRL : TX_DSP_CTRL));
+	}
+
+	/* One generator per transmit port; the receivers share their tap's. */
+	for (i = 0; i < HISTB_AIAO_NR_PORTS; i++)
+		if (!aiao->port[i].rx)
+			writel(0, aiao->port[i].crg + AIAO_CRG_CTRL);
+
 	reset_control_assert(aiao->rst);
 }
 
