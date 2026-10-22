@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/phy/hisilicon,hi3716cv200-sata-phy.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon Hi3716CV200 SATA PHY
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+description: |
+  The SATA PHY of the Hi3716CV200 sits in the controller's own register
+  window, so this node covers the same bytes the ahci host maps. The host
+  cannot be brought out of its power-on default until the two reset bits of
+  the SATA CRG word have seen an edge, which is why the resets belong here
+  rather than on the host, and the disk supply is switched through the
+  PERI system controller.
+
+properties:
+  compatible:
+    const: hisilicon,hi3716cv200-sata-phy
+
+  reg:
+    maxItems: 1
+
+  resets:
+    minItems: 2
+    maxItems: 2
+    description:
+      The bus and cko-alive reset request bits of the SATA CRG word. Both
+      are pulsed when the PHY is powered on.
+
+  '#phy-cells':
+    const: 0
+
+  hisilicon,peri-syscon:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle of the PERI system controller, whose word named by
+      hisilicon,power-reg carries the SATA disk supply bit.
+
+  hisilicon,power-reg:
+    description: Offset and bit number within the PERI system controller
+      register controlling the SATA disk supply.
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    items:
+      - description: Offset within the PERI system controller register.
+      - description: Bit number controlling the SATA disk supply.
+
+required:
+  - compatible
+  - reg
+  - resets
+  - '#phy-cells'
+  - hisilicon,peri-syscon
+  - hisilicon,power-reg
+
+additionalProperties: false
+
+examples:
+  - |
+    soc {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+
+        crg: clock-reset-controller@f8a22000 {
+            compatible = "hisilicon,hi3716cv200-crg", "syscon", "simple-mfd";
+            reg = <0xf8a22000 0x400>;
+            #clock-cells = <1>;
+            #reset-cells = <2>;
+        };
+
+        peri_syscon: system-control@f8a20000 {
+            compatible = "hisilicon,hi3716cv200-peri-syscon", "syscon";
+            reg = <0xf8a20000 0x1000>;
+        };
+
+        sata_phy: sata-phy@f9900000 {
+            compatible = "hisilicon,hi3716cv200-sata-phy";
+            reg = <0xf9900000 0x1000>;
+            resets = <&crg 0xa8 8>, <&crg 0xa8 9>;
+            #phy-cells = <0>;
+            hisilicon,peri-syscon = <&peri_syscon>;
+            hisilicon,power-reg = <0x8 10>;
+        };
+    };
