@@ -1183,7 +1183,18 @@ static int hix5hd2_dev_probe(struct platform_device *pdev)
 	snprintf(bus->id, MII_BUS_ID_SIZE, "%s-mii", dev_name(&pdev->dev));
 	priv->bus = bus;
 
-	ret = of_mdiobus_register(bus, node);
+	/*
+	 * A fixed link names no PHY on this bus, and of_mdiobus_register() would
+	 * treat the fixed-link child as a PHY candidate with no reg property and
+	 * walk all 32 addresses printing a line per address, so register the bus
+	 * with the scan masked out instead.
+	 */
+	if (of_phy_is_fixed_link(node)) {
+		bus->phy_mask = ~0;
+		ret = mdiobus_register(bus);
+	} else {
+		ret = of_mdiobus_register(bus, node);
+	}
 	if (ret)
 		goto err_free_mdio;
 
