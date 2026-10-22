@@ -1769,6 +1769,36 @@ static void dw_mci_request_end(struct dw_mci *host, struct mmc_request *mrq)
 	spin_lock(&host->lock);
 }
 
+/*
+ * Bring-up instrument, not for submission: the vendor block answers commands and
+ * raises its line, yet the card never initialises, and every state that would say
+ * which command broke is behind dev_vdbg (this file has no DEBUG define, so those
+ * lines are compiled out) while mmc core stays silent for the failure paths that
+ * return before printing. This prints the command, the raw status word and the
+ * first two response words -- always on an error, and on every command when the
+ * switch is set from the console.
+ */
+static bool cmd_trace;
+module_param(cmd_trace, bool, 0644);
+MODULE_PARM_DESC(cmd_trace, "print every command completion (bring-up debug)");
+
+/*
+ * One format string, two legs: the opt-in trace prints every completion, the error-only
+ * trace is rate-limited because an absent card makes the core re-try a command every few
+ * tens of milliseconds and the flood buries the bench output on the same console.
+ */
+#define CMDTRACE_FMT "cmdtrace: op=%u arg=%#010x err=%d status=%#010x resp=%#010x %#010x | cmdr=%#010x ctrl=%#010x pwren=%#010x clkdiv=%#010x clkena=%#010x mcut=%#010x\n"
+#define CMDTRACE_ARGS cmd->opcode, cmd->arg, cmd->error, status, cmd->resp[0], cmd->resp[1], mci_readl(host, CMD), mci_readl(host, CTRL), mci_readl(host, PWREN), mci_readl(host, CLKDIV), mci_readl(host, CLKENA), mci_readl(host, MINTSTS)
+
+static void dw_mci_cmd_trace(struct dw_mci *host, struct mmc_command *cmd, u32 status,
+			   int throttle)
+{
+	if (throttle)
+		dev_info_ratelimited(host->dev, CMDTRACE_FMT, CMDTRACE_ARGS);
+	else
+		dev_info(host->dev, CMDTRACE_FMT, CMDTRACE_ARGS);
+}
+
 static int dw_mci_command_complete(struct dw_mci *host, struct mmc_command *cmd)
 {
 	u32 status = host->cmd_status;
@@ -1798,6 +1828,9 @@ static int dw_mci_command_complete(struct dw_mci *host, struct mmc_command *cmd)
 		cmd->error = -EIO;
 	else
 		cmd->error = 0;
+
+	if (cmd->error || cmd_trace)
+		dw_mci_cmd_trace(host, cmd, status, cmd_trace ? 0 : 1);
 
 	return cmd->error;
 }
