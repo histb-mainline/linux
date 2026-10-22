@@ -69,3 +69,14 @@ config PHY_HIX5HD2_SATA
 	select MFD_SYSCON
 	help
 	  Support for SATA PHY on Hisilicon hix5hd2 Soc.
+
+config PHY_HI3716CV200_SATA
+	tristate "Hi3716CV200 SATA PHY support"
+	depends on ARCH_HI3716CV200 && OF && HAS_IOMEM
+	select GENERIC_PHY
+	select MFD_SYSCON
+	help
+	  Support for the SATA PHY of the HiSilicon Hi3716CV200. The PHY is
+	  reached through the SATA controller's own register window, and the
+	  block only accepts writes once the reset bits of its CRG word have
+	  seen an edge.
