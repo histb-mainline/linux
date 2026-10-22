@@ -72,6 +72,42 @@
 	};
 
 	/*
+	 * The cores' performance monitor. There is no register to describe here:
+	 * the counters live in the CPU bank the driver reaches through the cp15
+	 * accessors, and what the device tree carries is where the overflow
+	 * interrupt goes. The Cortex-A9 TRM puts it on private peripheral 6
+	 * (GIC INTID 38); the sampling arm of boardtest/cv200-pmucheck.c is what
+	 * says whether this SoC keeps that wiring, since the counters themselves
+	 * run whether or not the interrupt is delivered.
+	 */
+	pmu {
+		compatible = "arm,cortex-a9-pmu";
+		/*
+		 * The node sits at the root, where no interrupt-parent is inherited
+		 * from: without this line the driver probes and reports
+		 * "no irqs for PMU, sampling events not supported".
+		 */
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 6 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-affinity = <&cpu0>, <&cpu1>;
+		/*
+		 * Inferred, and this property is the test of the inference: the
+		 * board is booted by the vendor fastboot with no trusted-firmware
+		 * layer, so the kernel is likely running in secure SVC. Measured
+		 * 2026-10-22 with the interrupt wired: the armv7 driver announced
+		 * 7 counters, /proc/interrupts listed arm-pmu, and yet the cycle
+		 * and instruction counters both read 0 across a busy loop and the
+		 * PMU interrupt count stayed 0. That is the signature of
+		 * non-invasive debug being off -- PMCR/PMCNTENSET stay readable,
+		 * the counters just do not tick -- and SDER.SUNIDEN is only
+		 * reachable from secure state. If this boots, the state was
+		 * secure; if the SDER access traps, it was not, and then the PMU
+		 * cannot be enabled from this kernel at all.
+		 */
+		secure-reg-access;
+	};
+
+	/*
 	 * The A9 MPCore private peripheral region: SCU at offset 0 of it, the GIC
 	 * cpu interface at 0x100 (already described under the gic node). The vendor
 	 * kernel reaches the same block through REG_BASE_A9_PERI 0xF8A00000
