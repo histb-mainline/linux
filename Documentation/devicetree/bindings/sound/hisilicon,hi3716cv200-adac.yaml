@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/hisilicon,hi3716cv200-adac.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon Hi3716CV200 internal audio DAC
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+description: |
+  The analog output stage of the Hi3716CV200, reached through two 32-bit
+  registers next to the CRG. It is a consumer of the AIAO transmit port's
+  serial stream rather than a source of its own, so it carries no DMA or
+  interrupt of its own and is wired to that port by the sound card node.
+
+  The driver's only state is the power and mute bit the vendor's own audio HAL
+  toggles at stream start and stop, which is why it claims the gate clock and
+  the reset line: a write to the block does not land while either is off.
+
+properties:
+  compatible:
+    const: hisilicon,hi3716cv200-adac
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+    description: Gate of the DAC (PERI_CRG69 bit 0).
+
+  resets:
+    maxItems: 1
+    description:
+      DAC soft reset (PERI_CRG69 bit 4). The cell pair is a register offset
+      and a bit number, which is what reset-cells = <2> asks of the CRG.
+
+  '#sound-dai-cells':
+    const: 0
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - resets
+  - '#sound-dai-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/hisilicon,hi3716cv200-crg.h>
+
+    audio-codec@f8a20110 {
+        compatible = "hisilicon,hi3716cv200-adac";
+        reg = <0xf8a20110 0x8>;
+        clocks = <&crg HI3716CV200_ADAC_CLK>;
+        resets = <&crg 0x114 4>;
+        #sound-dai-cells = <0>;
+    };

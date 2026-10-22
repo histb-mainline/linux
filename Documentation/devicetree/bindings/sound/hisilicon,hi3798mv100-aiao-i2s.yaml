@@ -28,7 +28,9 @@ description: |
 
 properties:
   compatible:
-    const: hisilicon,hi3798mv100-aiao-i2s
+    enum:
+      - hisilicon,hi3798mv100-aiao-i2s
+      - hisilicon,hi3716cv200-aiao-i2s
 
   reg:
     maxItems: 1
@@ -76,6 +78,18 @@ examples:
         reg = <0x8cd0000 0x10000>;
         interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
         clocks = <&crg HI3798MV100_AIAO_CLK>;
+        resets = <&crg 0x118 4>;
+        #sound-dai-cells = <1>;
+    };
+  - |
+    #include <dt-bindings/clock/hisilicon,hi3716cv200-crg.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    audio@8cd0000 {
+        compatible = "hisilicon,hi3716cv200-aiao-i2s";
+        reg = <0xf8cd0000 0x10000>;
+        interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&crg HI3716CV200_AIAO_CLK>;
         resets = <&crg 0x118 4>;
         #sound-dai-cells = <1>;
     };
