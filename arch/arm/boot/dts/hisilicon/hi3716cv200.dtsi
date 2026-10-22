@@ -303,6 +303,37 @@
 			clock-names = "uartclk", "apb_pclk";
 			status = "disabled";
 		};
+
+		/*
+		 * WDG0 and WDG1 are SP805 blocks; the vendor s40_restart() uses
+		 * WDG0 the same way. PERI_CRG94 (0x178) gates them: bits 0..3
+		 * are wdg0..3_cken, bits 4..7 the matching srst_req. Both bits of the pair
+		 * belong to &crg's clk_wdt0 row: this driver consumes no reset control, so a
+		 * `resets` cell here would leave the dog held in reset with nobody to release
+		 * it, and a dog in reset does not count (see crg-hi3716cv200.c).
+		 */
+		wdt0: watchdog@f8a2c000 {
+			compatible = "arm,sp805", "arm,primecell";
+			/*
+			 * This instance has no PrimeCell ID header: with the block
+			 * clocked and out of reset (CRG94 0x0000000F) it answers at
+			 * offset 0x00 but 0xfe0..0xffc read eight zero words, while a
+			 * PL061 bank read in the same batch answers 61 10 04 00 /
+			 * 05 b1 -- so the zeros are the hardware, not the read method.
+			 * Nothing here is a measured ID: the property below presets
+			 * adev->periphid (of/platform.c) and amba_device_add() then
+			 * skips amba_read_periphid() entirely, so /sys .../id just
+			 * echoes this constant. The value is the driver's own table
+			 * entry (sp805_wdt_ids, mask 0x00ffffff), so bits 23:0 are
+			 * all that carries meaning here.
+			 */
+			arm,primecell-periphid = <0x00141805>;
+			reg = <0xf8a2c000 0x1000>;
+			interrupts = <GIC_SPI 4 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_WDT0_CLK>, <&xtal24mhz>;
+			clock-names = "wdog_clk", "apb_pclk";
+			timeout-sec = <60>;
+		};
 	};
 };
 
