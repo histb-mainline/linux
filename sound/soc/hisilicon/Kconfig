@@ -17,6 +17,16 @@ config SND_SOC_HISTB_AIAO_I2S
 	  Hi3716CV200. Each port is an I2S master with its own clock generator and
 	  its own ring-buffer engine.
 
+config SND_SOC_HISTB_ADAC
+	tristate "HiSTB TianLai internal audio DAC"
+	depends on ARCH_HISI || COMPILE_TEST
+	help
+	  Say Y here if you want the on-chip analog output stage of HiSilicon
+	  STB SoCs such as the Hi3716CV200. It is an I2S consumer with no
+	  selectable data source: the vendor port map wires it to AIAO transmit
+	  port 2, and it has no capture side in the V500 generation this part
+	  builds with.
+
 config SND_SOC_HISTB_AIAO_CARD
 	tristate "HiSTB AIAO Sound Card"
 	depends on ARCH_HISI || COMPILE_TEST
