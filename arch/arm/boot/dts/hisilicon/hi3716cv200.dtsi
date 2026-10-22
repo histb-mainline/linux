@@ -674,6 +674,42 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 		};
+
+		/*
+		 * The two SSPs are Primecell PL022: the vendor register list is
+		 * CR0/CR1/DR/SR/CPSR/IMSC/RIS/MIS/ICR plus the two FIFO thresholds at
+		 * 0x28/0x2c (msp/drv/spi/drv_spi.c:67-89), and the bases are SPI0
+		 * 0xf8b1a000 with SPI1 0xf8007000 for this chip -- the other branch of
+		 * that #ifdef is the cv100/cv200_a pair at 0xf8b1b000 (drv_spi.c:51-60).
+		 * The interrupts are the vendor's SPI0_IRQ (32+45) and SPI1_IRQ (32+46)
+		 * (drv_spi.c:62-63), which are already GIC INTIDs, so they are SPI 45
+		 * and 46 here.
+		 *
+		 * The same clock id feeds both names because CRG28 has one gate per
+		 * port and no separate APB gate: sspclk is what the driver asks for and
+		 * apb_pclk is the binding's second name for the same access.
+		 */
+		ssp0: spi@f8b1a000 {
+			compatible = "arm,pl022", "arm,primecell";
+			reg = <0xf8b1a000 0x1000>;
+			interrupts = <GIC_SPI 45 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_SSP0_CLK>,
+				 <&crg HI3716CV200_SSP0_CLK>;
+			clock-names = "sspclk", "apb_pclk";
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		ssp1: spi@f8007000 {
+			compatible = "arm,pl022", "arm,primecell";
+			reg = <0xf8007000 0x1000>;
+			interrupts = <GIC_SPI 46 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_SSP1_CLK>,
+				 <&crg HI3716CV200_SSP1_CLK>;
+			clock-names = "sspclk", "apb_pclk";
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
 	};
 };
 
