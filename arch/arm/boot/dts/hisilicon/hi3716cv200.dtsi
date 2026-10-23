@@ -841,6 +841,28 @@
 			phys = <&sata_phy>;
 			phy-names = "sata-phy";
 		};
+
+		/*
+		 * NAND: the hinfc610 block the box roots itself on. Two windows because
+		 * the controller separates its register file from the byte window the
+		 * command, address and status bytes travel through -- the vendor driver
+		 * ioremaps the second one straight into the chip's IO_ADDR_R (the
+		 * node's own `reg` pair in the vendor tree is the same two ranges).
+		 * The ECC pair is what the running vendor system reports: CON reads
+		 * 0x383 with ECCTYPE 1, which this block's table calls 8 bits per
+		 * 1024-byte step, over a 2 KiB page.
+		 */
+		nandc: nand-controller@f9810000 {
+			compatible = "hisilicon,hi3716cv200-nand-controller";
+			reg = <0xf9810000 0x100>, <0xfe000000 0x2176>;
+			clocks = <&crg HI3716CV200_NAND_CLK>;
+			/* CRG24[4] nf_srst_req, the reset beside CRG24[0] nf_cken */
+			resets = <&crg 0x60 4>;
+			nand-ecc-strength = <8>;
+			nand-ecc-step-size = <1024>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
 	};
 };
 
