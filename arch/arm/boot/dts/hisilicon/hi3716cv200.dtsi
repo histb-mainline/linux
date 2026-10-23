@@ -305,6 +305,261 @@
 		};
 
 		/*
+		 * The GPIO banks are genuine ARM PL061 PrimeCells, so the in-tree
+		 * driver is the whole port -- no new code. Measured on the production
+		 * system of this board: the first bank's ID header reads PIDR0..3 =
+		 * 0x61 0x10 0x04 0x00 and CIDR0..3 = 0x0d 0xf0 0x05 0xb1, i.e. the
+		 * periphid 0x00041061 that is the only entry in gpio-pl061.c's amba_id
+		 * table (mask 0x000fffff), and the register face the vendor GPIO HAL
+		 * uses (boot/product/driver/gpio/drv_gpio.c g_GpioRegAddr, with
+		 * DIR 0x400, IS 0x404, IBE 0x408, IEV 0x40c, IE 0x410, RIS 0x414,
+		 * MIS 0x418, IC 0x41c -- msp/drv/include/hi_drv_gpio.h:193-200) is
+		 * the PL061 map at the same offsets.
+		 *
+		 * 18 banks of 8 lines, and the production /proc/interrupts names eighteen GPIO rows:
+		 * hi_gpio00_irq to hi_gpio17_irq at INTID 140 to 157, so every bank has its own wired
+		 * interrupt. On this board those numbers are GIC INTIDs -- the same table gives 81 for
+		 * uart-pl011, which is what this kernel measures for that device -- so bank n is
+		 * SPI 108 + n, which is why the bank at 0xf8004000 sits between 0xf8b24000 and
+		 * 0xf8b26000 and carries number five. An earlier capture read only the first nine rows
+		 * and was taken for the bank count; the full table refutes that, and the nine banks it
+		 * seemed to leave unparented are wired exactly like the first nine.
+		 *
+		 * What the production system leaves configured: every DIR reads
+		 * 0x00000000 except 0xf8b24000 with bit 7 set and 0xf8b31000 with bit
+		 * 4 set, i.e. two driven pins in the whole box. The always-on window's bank at
+		 * 0xf8004000 is described like the rest: read under this kernel it answers
+		 * PIDR0..3 = 61 10 04 00 (periphid 0x00041061, gpio-pl061.c's only id) and
+		 * CIDR0..3 = 0d f0 05 b1, and the SDK names it REG_BASE_GPIO5 with
+		 * MAX_GPIO_NUMS 18 (boot/fastboot/arch/arm/include/asm/arch-s40/platform.h).
+		 * An earlier probe that seemed to get no answer was the probe's problem: the
+		 * data window and the ID page both read fine.
+		 */
+		gpio0: gpio@f8b20000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b20000 0x1000>;
+			interrupts = <GIC_SPI 108 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio1: gpio@f8b21000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b21000 0x1000>;
+			interrupts = <GIC_SPI 109 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio2: gpio@f8b22000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b22000 0x1000>;
+			interrupts = <GIC_SPI 110 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio3: gpio@f8b23000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b23000 0x1000>;
+			interrupts = <GIC_SPI 111 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio4: gpio@f8b24000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b24000 0x1000>;
+			interrupts = <GIC_SPI 112 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio5: gpio@f8004000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8004000 0x1000>;
+			interrupts = <GIC_SPI 113 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio6: gpio@f8b26000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b26000 0x1000>;
+			interrupts = <GIC_SPI 114 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio7: gpio@f8b27000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b27000 0x1000>;
+			interrupts = <GIC_SPI 115 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio8: gpio@f8b28000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b28000 0x1000>;
+			interrupts = <GIC_SPI 116 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		/*
+		 * Those nine banks carry their interrupts now, from the same table: INTID 149 to 157
+		 * is SPI 117 to 125 in bank order. What the parentless experiment taught stays here,
+		 * because it is why the driver change is right for any board that really does leave a
+		 * bank unparented: gpio-pl061.c handed IRQ 0 to irq_set_chained_handler_and_data(),
+		 * which warned once per such bank on every boot, so the driver now skips the whole
+		 * irq side when adev->irq[0] is zero.
+		 */
+		gpio9: gpio@f8b29000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b29000 0x1000>;
+			interrupts = <GIC_SPI 117 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio10: gpio@f8b2a000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b2a000 0x1000>;
+			interrupts = <GIC_SPI 118 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio11: gpio@f8b2b000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b2b000 0x1000>;
+			interrupts = <GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio12: gpio@f8b2c000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b2c000 0x1000>;
+			interrupts = <GIC_SPI 120 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio13: gpio@f8b2d000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b2d000 0x1000>;
+			interrupts = <GIC_SPI 121 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio14: gpio@f8b2e000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b2e000 0x1000>;
+			interrupts = <GIC_SPI 122 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio15: gpio@f8b2f000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b2f000 0x1000>;
+			interrupts = <GIC_SPI 123 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio16: gpio@f8b30000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b30000 0x1000>;
+			interrupts = <GIC_SPI 124 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		gpio17: gpio@f8b31000 {
+			compatible = "arm,pl061", "arm,primecell";
+			reg = <0xf8b31000 0x1000>;
+			interrupts = <GIC_SPI 125 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			clocks = <&xtal24mhz>;
+			clock-names = "apb_pclk";
+		};
+
+		/*
 		 * WDG0 and WDG1 are SP805 blocks; the vendor s40_restart() uses
 		 * WDG0 the same way. PERI_CRG94 (0x178) gates them: bits 0..3
 		 * are wdg0..3_cken, bits 4..7 the matching srst_req. Both bits of the pair
