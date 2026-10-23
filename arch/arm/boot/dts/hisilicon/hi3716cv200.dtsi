@@ -118,6 +118,24 @@
 		reg = <0xf8a00000 0x100>;
 	};
 
+	/*
+	 * The integrated L2C-310. Live reads (2026-10-25, bench devmem): CacheID
+	 * 0x410000C9 (PL310 r3p2) at 0xf8a10000, CacheType 0x9e240240, and
+	 * AuxCtrl 0x00000000 -- every boot the board has seen (vendor and ours)
+	 * leaves the controller disabled; only its clock is up (CRG20 bit4
+	 * l2_clkoff_sys = 0). No interrupt is described because the combi IRQ
+	 * wiring is unknown and the l2x0 driver does not need one; the vendor
+	 * kernels run with CONFIG_CACHE_L2X0 unset, so there is no vendor
+	 * register word to copy the aux settings from and the driver's reset
+	 * defaults apply.
+	 */
+	L2: cache-controller@f8a10000 {
+		compatible = "arm,pl310-cache";
+		reg = <0xf8a10000 0x1000>;
+		cache-unified;
+		cache-level = <2>;
+	};
+
 	soc {
 		compatible = "simple-bus";
 		interrupt-parent = <&gic>;
