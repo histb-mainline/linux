@@ -55,6 +55,16 @@ config ARCH_HIX5HD2
 	help
 	  Support for Hisilicon HIX5HD2 SoC family
 
+config ARCH_HI3716CV200
+	bool "Hisilicon Hi3716CV200 family"
+	depends on ARCH_MULTI_V7
+	select HAVE_ARM_SCU if SMP
+	help
+	  Support for the HiSilicon Hi3716CV200 SoC family. The Cortex-A9 private
+	  timer is deliberately not selected here: on this part it keeps the value
+	  written and never counts, and the per-CPU clock events come from the
+	  SP804 channels instead.
+
 config ARCH_SD5203
 	bool "Hisilicon SD5203 family"
 	depends on ARCH_MULTI_V5
