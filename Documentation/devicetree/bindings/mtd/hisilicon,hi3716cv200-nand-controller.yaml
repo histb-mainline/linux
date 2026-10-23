@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mtd/hisilicon,hi3716cv200-nand-controller.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon Hi3716CV200 NAND Flash Controller (hinfc610)
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+description: |
+  The NAND flash controller of the Hi3716CV200 separates its register file
+  from the window the command, address and status bytes travel through, so
+  both ranges are listed. Transfers are set up in the register file and moved
+  by the block's own DMA engine; the completion is polled, because the
+  interrupts of this instance are not wired to the distributor.
+
+  The engine corrects eight bits per 1024-byte step, and the only page size
+  this generation has been used with is 2 KiB.
+
+  The reset is the block's own soft reset, CRG24 bit 4, which sits beside the
+  clock gate in the same register; the driver holds it and releases it before
+  it writes any of its registers, so the block is never configured with the
+  state a previous owner left in it.
+
+allOf:
+  - $ref: nand-controller.yaml
+
+properties:
+  compatible:
+    const: hisilicon,hi3716cv200-nand-controller
+
+  reg:
+    minItems: 2
+    maxItems: 2
+
+  clocks:
+    maxItems: 1
+
+  resets:
+    maxItems: 1
+
+  nand-ecc-strength:
+    const: 8
+
+  nand-ecc-step-size:
+    enum: [ 512, 1024 ]
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - resets
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/hisilicon,hi3716cv200-crg.h>
+
+    nandc: nand-controller@f9810000 {
+        compatible = "hisilicon,hi3716cv200-nand-controller";
+        reg = <0xf9810000 0x100>, <0xfe000000 0x2176>;
+        clocks = <&crg HI3716CV200_NAND_CLK>;
+        resets = <&crg 0x60 4>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        nand-ecc-strength = <8>;
+        nand-ecc-step-size = <1024>;
+    };
