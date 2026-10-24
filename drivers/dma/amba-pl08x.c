@@ -75,6 +75,7 @@
 #include <linux/of.h>
 #include <linux/of_dma.h>
 #include <linux/pm_runtime.h>
+#include <linux/reset.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/amba/pl080.h>
@@ -2695,6 +2696,7 @@ static int pl08x_probe(struct amba_device *adev, const struct amba_id *id)
 	struct pl08x_driver_data *pl08x;
 	struct vendor_data *vd = id->data;
 	struct device_node *np = adev->dev.of_node;
+	struct reset_control *rst;
 	u32 tsfr_size;
 	int ret = 0;
 	int i;
@@ -2724,6 +2726,20 @@ static int pl08x_probe(struct amba_device *adev, const struct amba_id *id)
 		ret = -ENOMEM;
 		goto out_no_ioremap;
 	}
+
+	/*
+	 * Nothing below, not even the feature register, is readable while the
+	 * block is held in reset, and bootloaders increasingly leave unused
+	 * peripherals in reset for Linux to release.
+	 */
+	rst = devm_reset_control_get_optional_exclusive(&adev->dev, NULL);
+	if (IS_ERR(rst)) {
+		ret = PTR_ERR(rst);
+		goto out_no_ioremap;
+	}
+	ret = reset_control_deassert(rst);
+	if (ret)
+		goto out_no_ioremap;
 
 	if (vd->ftdmac020) {
 		u32 val;
