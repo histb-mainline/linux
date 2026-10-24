@@ -2698,6 +2698,7 @@ static int pl08x_probe(struct amba_device *adev, const struct amba_id *id)
 	struct device_node *np = adev->dev.of_node;
 	struct reset_control *rst;
 	u32 tsfr_size;
+	u32 channels;
 	int ret = 0;
 	int i;
 
@@ -2761,6 +2762,19 @@ static int pl08x_probe(struct amba_device *adev, const struct amba_id *id)
 				 "linked lists not supported, required\n");
 		vd->channels = (val >> 12) & 0x0f;
 		vd->dualmaster = !!(val & BIT(9));
+	}
+
+	/*
+	 * The part number says how many channels the IP can have, not how many
+	 * this integrator wired up; shrink the count when the node says so.
+	 */
+	if (!of_property_read_u32(np, "dma-channels", &channels) && channels) {
+		if (channels > vd->channels)
+			dev_warn(&adev->dev,
+				 "node says %u channels, IP has %u: using %u\n",
+				 channels, vd->channels, vd->channels);
+		else
+			vd->channels = channels;
 	}
 
 	/* Initialize memcpy engine */
