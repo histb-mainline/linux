@@ -261,6 +261,7 @@ struct hix5hd2_priv {
 	unsigned long hw_cap;
 	unsigned int speed;
 	unsigned int duplex;
+	bool port_need_config;
 
 	struct clk *mac_core_clk;
 	struct clk *mac_ifc_clk;
@@ -455,11 +456,38 @@ static void hix5hd2_adjust_link(struct net_device *dev)
 {
 	struct hix5hd2_priv *priv = netdev_priv(dev);
 	struct phy_device *phy = dev->phydev;
+	unsigned long deadline;
 
-	if ((priv->speed != phy->speed) || (priv->duplex != phy->duplex)) {
-		hix5hd2_config_port(dev, phy->speed, phy->duplex);
-		phy_print_status(phy);
-	}
+	/*
+	 * Program the port on every link-up, not only when the negotiated
+	 * parameters change. hix5hd2_net_close() leaves priv->speed and
+	 * priv->duplex alone, so "did they change" is false for every reopen and
+	 * the RGMII/MIIM interface -- hix5hd2_config_port(), which writes the
+	 * interface control register, PORT_MODE, the duplex bit and pulses the
+	 * interface reset -- would then never run again after the first open.
+	 * This chip's own driver programs it on each link-up too and puts a
+	 * bounded drain plus a settle in front of it (hieth-gmac/higmac.c:605:
+	 * wait for TX_BQ_RD to catch TX_BQ_WR for up to HIGMAC_FLUSH_WAIT_TIME,
+	 * then mdelay(30), then higmac_set_macif()).
+	 */
+	if (!phy->link || !(priv->port_need_config ||
+			    priv->speed != phy->speed ||
+			    priv->duplex != phy->duplex))
+		return;
+
+	deadline = jiffies + msecs_to_jiffies(100);
+	do {
+		if (readl_relaxed(priv->base + TX_BQ_RD_ADDR) ==
+		    readl_relaxed(priv->base + TX_BQ_WR_ADDR))
+			break;
+		usleep_range(1000, 2000);
+	} while (time_before(jiffies, deadline));
+
+	usleep_range(30000, 40000);
+
+	hix5hd2_config_port(dev, phy->speed, phy->duplex);
+	priv->port_need_config = false;
+	phy_print_status(phy);
 }
 
 static void hix5hd2_rx_refill(struct hix5hd2_priv *priv)
@@ -791,7 +819,28 @@ static netdev_tx_t hix5hd2_net_xmit(struct sk_buff *skb, struct net_device *dev)
 	return NETDEV_TX_OK;
 }
 
-static void hix5hd2_free_dma_desc_rings(struct hix5hd2_priv *priv)
+/*
+ * Release the receive buffers when the device goes away, not when
+ * the interface is closed.
+ *
+ * The block fetches sixteen free-queue descriptors ahead of the
+ * producer and keeps them: measured on the AR513W, a freshly opened
+ * eth0 that has received nothing yet already has RX_FQ_RD at 0x200
+ * (sixteen descriptors in), and a reopen inherits the position
+ * (RX_FQ_WR=0x120 against RX_FQ_RD=0x320 after one down/up cycle).
+ * Releasing every rx_skb[] entry at close therefore hands the block
+ * destinations it still owns, and the stack receives the buffers
+ * this driver posted instead -- empty ones. That is what the
+ * kfree_skb tracepoint showed after such a reopen: frames coming up
+ * with protocol=12562 (UNHANDLED_PROTO) and six of them parsed as
+ * LLC, i.e. whatever the slab had left in the memory rather than the
+ * packet on the wire.
+ *
+ * Keeping them mapped and owned costs at most RX_DESC_NUM skbs
+ * between close and reopen, which is what the vendor's own restart
+ * path does with its placeholder buffers.
+ */
+static void hix5hd2_release_rx_buffers(struct hix5hd2_priv *priv)
 {
 	struct hix5hd2_desc *desc;
 	dma_addr_t addr;
@@ -799,6 +848,7 @@ static void hix5hd2_free_dma_desc_rings(struct hix5hd2_priv *priv)
 
 	for (i = 0; i < RX_DESC_NUM; i++) {
 		struct sk_buff *skb = priv->rx_skb[i];
+
 		if (skb == NULL)
 			continue;
 
@@ -809,6 +859,13 @@ static void hix5hd2_free_dma_desc_rings(struct hix5hd2_priv *priv)
 		dev_kfree_skb_any(skb);
 		priv->rx_skb[i] = NULL;
 	}
+}
+
+static void hix5hd2_free_dma_desc_rings(struct hix5hd2_priv *priv)
+{
+	struct hix5hd2_desc *desc;
+	dma_addr_t addr;
+	int i;
 
 	for (i = 0; i < TX_DESC_NUM; i++) {
 		struct sk_buff *skb = priv->tx_skb[i];
@@ -823,11 +880,67 @@ static void hix5hd2_free_dma_desc_rings(struct hix5hd2_priv *priv)
 	}
 }
 
+/*
+ * Make the transmit half of a reopened interface look like a
+ * first-opened one.
+ *
+ * hix5hd2_net_close() frees every tx_skb[] entry but leaves the four
+ * transmit shadow pointers where the previous session ended, so the
+ * next hix5hd2_xmit_reclaim() would chase completions whose buffers
+ * are gone. Zeroing the transmit pair reproduces the state this
+ * board is known to carry traffic in: the first open works because
+ * reset leaves all eight pointers at zero, and measured on the
+ * AR513W an interface pinged after two down/up cycles puts its
+ * eight echo requests on the wire with the pointers parked here.
+ *
+ * The receive half deliberately is NOT touched. The block holds
+ * sixteen descriptors it already fetched, and the buffers they name
+ * are kept alive by hix5hd2_release_rx_buffers(); zeroing the
+ * receive pointers or clearing the receive rings would split that
+ * pair apart, which is what delivered un-written buffers to the
+ * stack (protocol=12562, LLC) after a down/up cycle.
+ */
+static void hix5hd2_reset_tx_pointers(struct hix5hd2_priv *priv)
+{
+	void __iomem *base = priv->base;
+	int i;
+
+	/* the queues have to be parked while their pointers move */
+	writel_relaxed(BITS_RX_STOP | BITS_TX_STOP, base + STOP_CMD);
+
+	writel_relaxed(BITS_TX_BQ_RD_ADDR_EN, base + TX_BQ_REG_EN);
+	writel_relaxed(0, base + TX_BQ_WR_ADDR);
+	writel_relaxed(0, base + TX_BQ_RD_ADDR);
+	writel_relaxed(0, base + TX_BQ_REG_EN);
+
+	writel_relaxed(BITS_TX_RQ_WR_ADDR_EN, base + TX_RQ_REG_EN);
+	writel_relaxed(0, base + TX_RQ_WR_ADDR);
+	writel_relaxed(0, base + TX_RQ_RD_ADDR);
+	writel_relaxed(0, base + TX_RQ_REG_EN);
+
+	writel_relaxed(0, base + STOP_CMD);
+
+	/*
+	 * the two receive rings keep their descriptors: the block is
+	 * mid-queue in them
+	 */
+	for (i = 2; i < QUEUE_NUMS; i++) {
+		struct hix5hd2_desc_sw *q = &priv->pool[i];
+
+		memset(q->desc, 0, q->count * sizeof(*q->desc));
+	}
+	memset(priv->tx_skb, 0, sizeof(priv->tx_skb));
+}
+
 static int hix5hd2_net_open(struct net_device *dev)
 {
+	BUILD_BUG_ON(sizeof(struct hix5hd2_desc) != DESC_SIZE);
+
 	struct hix5hd2_priv *priv = netdev_priv(dev);
 	struct phy_device *phy;
 	int ret;
+
+	priv->port_need_config = true;
 
 	ret = clk_prepare_enable(priv->mac_core_clk);
 	if (ret < 0) {
@@ -852,6 +965,7 @@ static int hix5hd2_net_open(struct net_device *dev)
 
 	phy_start(phy);
 	hix5hd2_hw_init(priv);
+	hix5hd2_reset_tx_pointers(priv);
 	hix5hd2_rx_refill(priv);
 
 	netdev_reset_queue(dev);
@@ -978,6 +1092,9 @@ out:
 static void hix5hd2_destroy_hw_desc_queue(struct hix5hd2_priv *priv)
 {
 	int i;
+
+	/* the receive buffers survive a close, so they are freed with the rings */
+	hix5hd2_release_rx_buffers(priv);
 
 	for (i = 0; i < QUEUE_NUMS; i++) {
 		if (priv->pool[i].desc) {
