@@ -1115,6 +1115,69 @@
 			clock-names = "bus", "core";
 			resets = <&crg 0xd4 4>;
 		};
+
+		jpgd: jpeg-decoder@f8c40000 {
+			compatible = "hisilicon,hi3716cv200-jpgd";
+			reg = <0xf8c40000 0x6c0>;
+			interrupts = <GIC_SPI 97 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_JPGD_CLK>;
+			clock-names = "jpgd";
+			resets = <&crg 0x7c 4>;
+			reset-names = "jpgd";
+			status = "disabled";
+		};
+
+		jpge: jpeg-encoder@f8c90000 {
+			compatible = "hisilicon,hi3716cv200-jpge";
+			reg = <0xf8c90000 0x10c0>;
+			interrupts = <GIC_SPI 102 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_JPGE_CLK>;
+			clock-names = "jpge";
+			resets = <&crg 0x90 4>;
+			reset-names = "jpge";
+			status = "disabled";
+		};
+
+		/*
+		 * The video decoder. Same block generation as the Hi3798MV100's as
+		 * far as this kernel programs it: the vendor's firmware for this part
+		 * puts the VDM at 0xf8c30000 and the SCD at 0xf8c3c000 and gives the
+		 * doorbell interrupt as SPI 95 (vfmw_v4.0/firmware/product/
+		 * Hi3716CV200/sysconfig.h:26,29,36 -- a file byte-identical to that
+		 * part's). The VDM window is sized to reach the syntax-error record at
+		 * 0x1014. HEVC is not in this part's codec list, unlike the
+		 * Hi3798MV100's.
+		 */
+		vdec: video-codec@f8c30000 {
+			compatible = "hisilicon,hi3716cv200-vdec";
+			reg = <0xf8c30000 0x1100>, <0xf8c3c000 0x1000>;
+			reg-names = "vdm", "scd";
+			interrupts = <GIC_SPI 95 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_VDH_CLK>;
+			clock-names = "vdec";
+			resets = <&crg 0x78 4>, <&crg 0x78 6>;
+			reset-names = "global", "vdm";
+			status = "disabled";
+		};
+
+		/*
+		 * The video encoder, present on silicon: read back at fastboot, the
+		 * window answers and 0xf8c800fc gives 0x56325238, the revision string
+		 * "V2R8" -- the r008 register file the vendor's own build selects for
+		 * this part (msp/drv/venc/Makefile:26-29, hal_venc.h:11-12,27-30, which
+		 * also gives the base here and SPI 101). No board config in the SDK
+		 * enables it, so nothing has ever decoded through it.
+		 */
+		venc: video-encoder@f8c80000 {
+			compatible = "hisilicon,hi3716cv200-venc";
+			reg = <0xf8c80000 0x10000>;
+			interrupts = <GIC_SPI 101 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&crg HI3716CV200_VENC_CLK>;
+			clock-names = "venc";
+			resets = <&crg 0x8c 4>;
+			reset-names = "venc";
+			status = "disabled";
+		};
 	};
 };
 
