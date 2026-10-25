@@ -173,18 +173,29 @@ static int wdt_config(struct watchdog_device *wdd, bool ping)
 
 	spin_lock(&wdt->lock);
 
+	/*
+	 * The counter only reloads, and only advances, while the block is
+	 * unlocked, and it only advances with INT_ENABLE set: writing WDTLOCK
+	 * right after WDTLOAD freezes WDTVALUE where it stands, which is what
+	 * the previous order did on every framework keepalive.  A locked dog
+	 * cannot count, so a locked arm is not a safety net at all.
+	 *
+	 * So: clear the interrupt first, enable, then load the counter, and
+	 * leave the block unlocked.  The UNLOCK write stays -- without it no
+	 * write lands at all.  wdt_disable still locks, because a stopped dog
+	 * should not be reprogrammable.
+	 */
 	writel_relaxed(UNLOCK, wdt->base + WDTLOCK);
-	writel_relaxed(wdt->load_val, wdt->base + WDTLOAD);
 	writel_relaxed(INT_MASK, wdt->base + WDTINTCLR);
 
 	if (!ping)
 		writel_relaxed(INT_ENABLE | RESET_ENABLE, wdt->base +
 				WDTCONTROL);
 
-	writel_relaxed(LOCK, wdt->base + WDTLOCK);
+	writel_relaxed(wdt->load_val, wdt->base + WDTLOAD);
 
 	/* Flush posted writes. */
-	readl_relaxed(wdt->base + WDTLOCK);
+	readl_relaxed(wdt->base + WDTLOAD);
 	spin_unlock(&wdt->lock);
 
 	return 0;
