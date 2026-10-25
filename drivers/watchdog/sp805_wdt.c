@@ -111,6 +111,14 @@ static int wdt_setload(struct watchdog_device *wdd, unsigned int timeout)
 	wdt->load_val = load;
 	/* roundup timeout to closest positive integer value */
 	wdd->timeout = div_u64((load + 1) * 2 + (rate / 2), rate);
+	/*
+	 * WDTLOAD counts down twice: the first underflow raises the interrupt,
+	 * the second one is what resets.  This driver never requests the
+	 * interrupt line, so nothing claims the first underflow -- the
+	 * framework has to service the counter strictly inside the first
+	 * window, not at its edge: its keepalive is max_hw_heartbeat_ms / 2.
+	 */
+	wdd->max_hw_heartbeat_ms = wdd->timeout * 500;
 	spin_unlock(&wdt->lock);
 
 	return 0;
