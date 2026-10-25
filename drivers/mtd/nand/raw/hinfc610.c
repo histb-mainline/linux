@@ -209,12 +209,12 @@ static void hinfc610_set_con(struct hinfc610_host *host, bool ecc)
  *
  * The pointer is the start of the spare region and stays word-aligned: aimed two
  * bytes into it, a program put the caller's bytes at cells 30 and 31, then 34 and
- * 35, and left 0x00 in the half-words between (measured), so
+ * 35, and left 0x00 in the half-words between (round 9, the spare-map probe), so
  * the block takes this address a word at a time.
  *
  * What it takes is not the cell order the caller names. A program of a spare
  * holding 0xff at 0..1 and 0x33 through 30..59 left 0x33 at cells 0, 1 and at
- * cells 30..57, and nothing above 57 (measured): the HINFC610_OOB_XFER bytes at
+ * cells 30..57, and nothing above 57 (round 10): the HINFC610_OOB_XFER bytes at
  * this pointer go to the mark cells and then to the usable window, while the
  * engine fills 2..29 with its own parity. The command hook compacts the caller's
  * cell order into that shape before starting the transfer.
@@ -763,6 +763,7 @@ static int hinfc610_probe(struct platform_device *pdev)
 	struct hinfc610_host *host;
 	unsigned int version;
 	u32 con;
+	u32 held;
 	int ret;
 
 	host = devm_kzalloc(dev, sizeof(*host), GFP_KERNEL);
@@ -810,12 +811,17 @@ static int hinfc610_probe(struct platform_device *pdev)
 	/*
 	 * Nothing the boot software left in this block is trusted: hold it in
 	 * reset, release it, and configure from the reset state instead of on top of
-	 * the hand-over state. The reset named by the node is the block's own soft
-	 * reset (nf_srst_req, hi_reg_crg.h:357 for this chip).
+	 * the hand-over state. The read between the two writes is the proof, because
+	 * a request bit can be accepted by the CRG without reaching the block:
+	 * CRG24[4] is nf_srst_req (hi_reg_crg.h:357 for this chip) and with it set
+	 * the control register has to come up at its reset default. If it still
+	 * reads the 0x383 that fastboot leaves, the pulse resets nothing and the line
+	 * below says so.
 	 */
 	ret = reset_control_assert(host->reset);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to hold the block in reset\n");
+	held = hinfc_read(host, HINFC610_CON);
 
 	ret = reset_control_deassert(host->reset);
 	if (ret)
@@ -823,8 +829,9 @@ static int hinfc610_probe(struct platform_device *pdev)
 
 	/*
 	 * Composed from scratch rather than inherited: the boot software leaves bit
-	 * 7 set (measured 0x383) and neither vendor tree names it, so it is left
-	 * out here.
+	 * 7 set (measured 0x383) and neither vendor tree names it, so this round
+	 * finds out whether the block needs it at all -- the read and program
+	 * verdicts say so, and the line below says what came up.
 	 *
 	 * The page size is set here rather than after the chip has been found,
 	 * because the identification commands run before that: with the field left
@@ -837,6 +844,11 @@ static int hinfc610_probe(struct platform_device *pdev)
 	con = HINFC610_CON_OP_MODE_NORMAL | HINFC610_CON_READY_BUSY_SEL |
 	      FIELD_PREP(HINFC610_CON_PAGESIZE_MASK, HINFC610_CON_PAGESIZE_2K);
 	host->con = con;
+
+	dev_info(dev,
+		 "reset: CON %#x held, %#x released, configured %#x (PWIDTH %#x, INTS %#x)\n",
+		 held, hinfc_read(host, HINFC610_CON), con,
+		 hinfc_read(host, HINFC610_PWIDTH), hinfc_read(host, HINFC610_INTS));
 
 	hinfc_write(host, host->con, HINFC610_CON);
 	hinfc_write(host, HINFC610_PWIDTH_S40, HINFC610_PWIDTH);
