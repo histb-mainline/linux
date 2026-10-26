@@ -200,7 +200,7 @@ static const struct {
 	[HI3798MV2X_JTAG]	= { (const char *[]){ "K20", "K19", "J20", "J19", "H21", "B18", }, 6 },
 	[HI3798MV2X_NAND]	= { (const char *[]){ "Y19", "W19", "AA20", "Y20", "V19", "Y21", "W20", "W21", "V20", "V21", "U20", "U21", "T18", "T19", "T20", "R20", "R21", }, 17 },
 	[HI3798MV2X_PMC]	= { (const char *[]){ "P20", "R19", "D5", }, 3 },
-	[HI3798MV2X_RGMII]	= { (const char *[]){ "B4", "C4", "A3", "B3", "A2", "B2", "A6", "C6", "C5", "C3", "D4", "D3", "B1", "C2", "C1", "A5", "D5", }, 17 },
+	[HI3798MV2X_RGMII]	= { (const char *[]){ "B4", "C4", "A3", "B3", "A2", "B2", "A6", "C6", "C5", "C3", "D4", "D3", "B1", "C2", "C1", }, 15 },
 	[HI3798MV2X_RMII]	= { (const char *[]){ "B4", "C4", "A3", "B3", "A2", "B2", "C5", "B1", "C2", "C1", }, 10 },
 	[HI3798MV2X_SATA]	= { (const char *[]){ "K18", "J17", }, 2 },
 	[HI3798MV2X_SDIO]	= { (const char *[]){ "F20", "F19", "E20", "E19", "D21", "E18", "C20", "D19", "B21", "B4", "C4", "A3", "B3", "A2", "B2", "C5", "C2", "C1", }, 18 },
