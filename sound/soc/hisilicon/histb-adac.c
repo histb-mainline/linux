@@ -32,6 +32,8 @@
 #include <sound/soc.h>
 
 #define HISTB_ADAC_LOUT		0x00
+#define  ADAC_DACR_VOL		GENMASK(6, 0)
+#define  ADAC_DACL_VOL		GENMASK(14, 8)
 #define  ADAC_POPFREER		BIT(24)
 #define  ADAC_POPFREEL		BIT(25)
 #define  ADAC_PD_VREF		BIT(27)

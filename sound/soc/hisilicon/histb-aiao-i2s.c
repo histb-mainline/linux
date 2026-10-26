@@ -94,6 +94,7 @@
 #define   TX_PRECISION			GENMASK(3, 2)
 #define   TX_CH_NUM			GENMASK(5, 4)
 #define   TX_SD_OFFSET			GENMASK(15, 8)
+#define   TX_TRACKMODE			GENMASK(18, 16)
 #define   TX_SD_SOURCE_SEL		GENMASK(23, 20)
 #define  TX_DSP_CTRL			0x04
 #define   TX_BYPASS_EN			BIT(27)
@@ -118,6 +119,7 @@
 #define AIAO_BCLK_DIV_IDX		3	/* index 3 of the bclk divider table selects 4 */
 #define AIAO_FSCLK_DIV_IDX		3	/* index 3 of the fs divider table selects 64 */
 
+#define AIAO_BUFFER_ALIGN		128
 #define AIAO_PERIOD_BYTES_MAX		4096
 #define AIAO_BUFFER_BYTES		(8 * AIAO_PERIOD_BYTES_MAX)
 
