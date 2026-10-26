@@ -71,7 +71,7 @@ unevaluatedProperties: false
 
 examples:
   - |
-    #include <dt-bindings/clock/histb-clock.h>
+    #include <dt-bindings/clock/hisilicon,hi3798cv200-crg.h>
     #include <dt-bindings/interrupt-controller/arm-gic.h>
 
     mmc@9830000 {
