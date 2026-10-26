@@ -37,6 +37,22 @@ static const struct {
 		.stream = "loopback",
 		.capture_only = true,
 	},
+	{
+		.node = "dac-playback",
+		.name = "aiao-dac",
+		.stream = "dac-playback",
+		/*
+		 * The DAC is the clock consumer here, and the transmit port
+		 * drives both, same as the HDMI side.
+		 */
+		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_CBC_CFC,
+	},
+	{
+		.node = "dac-capture",
+		.name = "aiao-dac-in",
+		.stream = "dac-loopback",
+		.capture_only = true,
+	},
 };
 
 struct histb_aiao_card {
@@ -89,8 +105,11 @@ static int histb_aiao_parse_link(struct platform_device *pdev,
 }
 
 /*
- * Each DAI the parse helpers resolve comes with a reference on its node,
- * including on the way back out of a failed probe.
+ * Each DAI the parse helpers resolve comes with a reference on its node.
+ * The component arrays those references live in are devm-allocated while the
+ * links are parsed, so this action has to be registered *after* them: devres
+ * unwinds in reverse order, and registering it first would run it on already
+ * freed arrays.
  */
 static void histb_aiao_put_dlc(void *data)
 {
@@ -109,6 +128,8 @@ static int histb_aiao_card_probe(struct platform_device *pdev)
 	struct histb_aiao_card *priv;
 	struct device_node *np = dev->of_node;
 	struct snd_soc_card *card;
+	struct snd_soc_dai_link *link;
+	struct snd_soc_dai_link_component *platform;
 	int i, ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -119,23 +140,29 @@ static int histb_aiao_card_probe(struct platform_device *pdev)
 	card->dev = dev;
 	card->driver_name = "histb-aiao";
 	card->dai_link = priv->link;
-	card->num_links = ARRAY_SIZE(histb_aiao_links);
 
 	ret = snd_soc_of_parse_card_name(card, "model");
 	if (ret)
 		return dev_err_probe(dev, ret, "no model name\n");
 
+	/*
+	 * A part without one of these taps leaves its node out of the tree, so
+	 * the table is a menu rather than a checklist. The count grows as links
+	 * are filled in, so a link that fails half-parsed still has the
+	 * references it already took released by the explicit put below.
+	 */
 	for (i = 0; i < ARRAY_SIZE(histb_aiao_links); i++) {
 		struct device_node *node = of_get_child_by_name(np,
 								histb_aiao_links[i].node);
 
 		if (!node)
-			return dev_err_probe(dev, -ENODEV, "no %s link\n",
-					     histb_aiao_links[i].node);
+			continue;
 
-		priv->link[i].name = histb_aiao_links[i].name;
-		ret = histb_aiao_parse_link(pdev, node, &priv->link[i],
-					    &priv->platform[i],
+		link = &priv->link[card->num_links];
+		platform = &priv->platform[card->num_links];
+		link->name = histb_aiao_links[i].name;
+		card->num_links++;
+		ret = histb_aiao_parse_link(pdev, node, link, platform,
 					    histb_aiao_links[i].stream,
 					    histb_aiao_links[i].dai_fmt,
 					    histb_aiao_links[i].capture_only);
@@ -145,6 +172,9 @@ static int histb_aiao_card_probe(struct platform_device *pdev)
 			return ret;
 		}
 	}
+
+	if (!card->num_links)
+		return dev_err_probe(dev, -ENODEV, "no DAI link in %pOF\n", np);
 
 	ret = devm_add_action_or_reset(dev, histb_aiao_put_dlc, card);
 	if (ret)
