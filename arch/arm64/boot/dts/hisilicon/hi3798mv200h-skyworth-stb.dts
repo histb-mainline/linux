@@ -175,6 +175,22 @@
 
 &femac {
 	status = "okay";
+
+	/*
+	 * This box's factory MAC, read out of the dumps in mv200h-img/: the
+	 * Skyworth "properties" partition holds it as the ASCII value of a "mac"
+	 * record and the "private" partition holds the same six bytes raw at
+	 * partition offset 0x600004.  Without it hisi_femac falls back to
+	 * eth_hw_addr_random(), so every boot presents a different Ethernet
+	 * identity and the DHCP lease churns.
+	 *
+	 * It is a literal rather than an nvmem cell because this tree has no way
+	 * to expose an eMMC partition to nvmem: CONFIG_OF_PARTITION
+	 * (block/partitions/of.c) reads the gendisk device's of_node, and nothing
+	 * in drivers/mmc/ ever sets it.  A per-unit value does not belong in a
+	 * shared board file, so this stays out of any submission.
+	 */
+	local-mac-address = [14 11 5d aa a4 6c];
 };
 
 /* The vendor DT and the board's MDIO scan both put the PHY at address 2. */

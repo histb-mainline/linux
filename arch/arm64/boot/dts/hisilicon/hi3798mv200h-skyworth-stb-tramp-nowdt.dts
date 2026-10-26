@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DTS for the risky-experiment boot of the Skyworth Hi3798MV200H.
+ *
+ * Same as the trampoline variant except that the kernel never claims the SP805,
+ * so nothing in the kernel can stop the boot-alive timer the stage1 stub armed.
+ *
+ * Why: on 2026-10-21 round 61 a NULL dereference inside lima's probe panicked
+ * at 1.002 s, machine_restart printed "Reboot failed -- System halted" and the
+ * box is still sitting there, reachable only by pulling power.  Which of the
+ * two rescue paths was missing in that window is not settled yet (sp805_wdt's
+ * initcall level and the state the stub left the counter in are both still open
+ * questions), so this file removes the kernel from the picture entirely: with
+ * status = "disabled" sp805_wdt never probes, never sets WDOG_HW_RUNNING, and
+ * only the stub's timer can reset the box.
+ *
+ * This file is [LOCAL]: it deliberately has no working software watchdog, so it
+ * is only for boots whose code may fault, never for a verification round.
+ */
+
+/dts-v1/;
+
+#include "hi3798mv200h-skyworth-stb-tramp.dts"
+
+&wdg0 {
+	status = "disabled";
+};

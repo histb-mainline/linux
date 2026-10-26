@@ -697,6 +697,13 @@
 		 * The same clock id feeds both names because CRG28 has one gate per
 		 * port and no separate APB gate: sspclk is what the driver asks for and
 		 * apb_pclk is the binding's second name for the same access.
+		 *
+		 * The spidev child is a bench descriptor, not hardware: nothing is
+		 * wired to these pins on this board (the running vendor system leaves
+		 * CRG28 at 0x22, gates off with both srst_req bits set). It exists so a
+		 * transfer can be issued
+		 * with SPI_LOOP, which spi-pl022 turns into the controller's own
+		 * CR1 loopback bit.
 		 */
 		ssp0: spi@f8b1a000 {
 			compatible = "arm,pl022", "arm,primecell";
@@ -707,6 +714,12 @@
 			clock-names = "sspclk", "apb_pclk";
 			#address-cells = <1>;
 			#size-cells = <0>;
+
+			bench_spi: spidev@0 {
+				compatible = "rohm,dh2228fv";
+				reg = <0>;
+				spi-max-frequency = <1000000>;
+			};
 		};
 
 		ssp1: spi@f8007000 {
@@ -929,7 +942,23 @@
 			bus-width = <4>;
 			max-frequency = <50000000>;
 			cap-sd-highspeed;
-			status = "disabled";
+			/*
+			 * broken-cd, not non-removable: the slot holds a card (confirmed by
+			 * hand on 2026-10-24) while dw_mci_get_cd() -- !(CDETECT & BIT(0)),
+			 * dw_mmc.c:897 -- keeps answering "absent", so the core would never even
+			 * try to initialise it. The detect line is therefore not usable, which is
+			 * exactly what this property means, and polling on a slot a human can
+			 * empty is the honest description; non-removable would instead claim the
+			 * card can never leave.
+			 */
+			broken-cd;
+			/*
+			 * Enabled with a card inserted (2026-10-22) so the host can be tested
+			 * end to end. The window at 0xf9820000 is the SD slot -- 0xf9830000 is
+			 * the 8-bit MMC one and stays disabled. Nothing in the bench writes to
+			 * the block device: the card is read-only by instruction.
+			 */
+			status = "okay";
 		};
 
 		sdio1: mmc@f9830000 {
@@ -1021,6 +1050,7 @@
 			clock-names = "mac_core";
 			resets = <&crg 0xcc 10>;
 			reset-names = "mac_ifc";
+			local-mac-address = [00 07 83 02 1a 28];
 			phy-mode = "mii";
 			phy-handle = <&phy0>;
 			#address-cells = <1>;
@@ -1068,6 +1098,8 @@
 			 */
 			resets = <&crg 0xcc 11>;
 			reset-names = "mac_ifc";
+			/* the MAC the fastboot programs into SA_LOW/SA_HIGH for this port */
+			local-mac-address = [00 07 83 02 1a 29];
 			/*
 			 * No source available here describes the delays on this
 			 * PCB, so the port keeps plain rgmii: no tx or rx offset, no id.
