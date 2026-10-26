@@ -9,6 +9,7 @@
 #include <linux/bitfield.h>
 #include <linux/dev_printk.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/pinctrl/pinconf-generic.h>
 #include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
@@ -317,6 +318,7 @@ const struct pinctrl_ops histb_pinctrl_pctl_ops = {
 	.dt_node_to_map		= pinconf_generic_dt_node_to_map_all,
 	.dt_free_map		= pinconf_generic_dt_free_map,
 };
+EXPORT_SYMBOL_GPL(histb_pinctrl_pctl_ops);
 
 const struct pinmux_ops histb_pinctrl_pinmux_ops = {
 	.get_functions_count	= pinmux_generic_get_function_count,
@@ -326,6 +328,7 @@ const struct pinmux_ops histb_pinctrl_pinmux_ops = {
 	.gpio_request_enable	= histb_pinctrl_gpio_request,
 	.strict			= true,
 };
+EXPORT_SYMBOL_GPL(histb_pinctrl_pinmux_ops);
 
 const struct pinconf_ops histb_pinctrl_pinconf_ops = {
 	.is_generic			= true,
@@ -333,3 +336,8 @@ const struct pinconf_ops histb_pinctrl_pinconf_ops = {
 	.pin_config_set			= histb_pinctrl_pinconf_set,
 	.pin_config_config_dbg_show	= pinconf_generic_dump_config,
 };
+EXPORT_SYMBOL_GPL(histb_pinctrl_pinconf_ops);
+
+MODULE_AUTHOR("Yang Xiwen <forbidden405@outlook.com>");
+MODULE_DESCRIPTION("HiSilicon HiSTB ioconfig pinctrl framework");
+MODULE_LICENSE("GPL");
