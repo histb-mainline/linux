@@ -69,7 +69,6 @@ properties:
 
   clock-names:
     minItems: 1
-    maxItems: 3
     items:
       - const: mac
       - const: macif
