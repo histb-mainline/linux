@@ -10,14 +10,41 @@ maintainers:
   - Yang Xiwen <forbidden405@foxmail.com>
 
 allOf:
-  - $ref: ethernet-controller.yaml
+  - $ref: ethernet-controller.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: hisilicon,hisi-femac
+    then:
+      required:
+        - clock-names
+        - phy-connection-type
+        - phy-handle
+      properties:
+        clocks:
+          minItems: 3
+
+description: |
+  The FEMAC core has one register window for the MAC itself and a second one
+  for the global MAC control. hi3798mv200 wires three clocks to it and names
+  them, and its MDIO bus is a child node the MAC driver populates. Earlier
+  members of the family (hisi-femac-v1/-v2, hi3516cv300) name no clocks at all
+  and keep the MDIO bus in a sibling node, which the bus driver binds to
+  directly; their clock cell stays unnamed there because the block has a single
+  clock.
 
 properties:
   compatible:
-    items:
+    oneOf:
+      - items:
+          - enum:
+              - hisilicon,hi3798mv200-femac
+          - const: hisilicon,hisi-femac
       - enum:
-          - hisilicon,hi3798mv200-femac
-      - const: hisilicon,hisi-femac
+          - hisilicon,hisi-femac-v1
+          - hisilicon,hisi-femac-v2
+          - hisilicon,hi3516cv300-femac
 
   reg:
     items:
@@ -37,9 +64,12 @@ properties:
     maxItems: 1
 
   clocks:
+    minItems: 1
     maxItems: 3
 
   clock-names:
+    minItems: 1
+    maxItems: 3
     items:
       - const: mac
       - const: macif
@@ -68,11 +98,7 @@ required:
   - reg
   - interrupts
   - clocks
-  - clock-names
   - resets
-  - reset-names
-  - phy-connection-type
-  - phy-handle
   - hisilicon,phy-reset-delays-us
 
 unevaluatedProperties: false
@@ -110,7 +136,21 @@ examples:
 
             ethernet-phy@1 {
                 reg = <1>;
-                #phy-cells = <0>;
             };
         };
+    };
+
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    ethernet@9840000 {
+        compatible = "hisilicon,hisi-femac-v2";
+        reg = <0x9840000 0x1000>, <0x9841300 0x200>;
+        interrupts = <GIC_SPI 71 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&crg 12>;
+        resets = <&crg 0xcc 4>, <&crg 0x120 4>;
+        reset-names = "mac", "phy";
+        phy-handle = <&phy1>;
+        phy-mode = "mii";
+        hisilicon,phy-reset-delays-us = <10000 10000 20000>;
     };

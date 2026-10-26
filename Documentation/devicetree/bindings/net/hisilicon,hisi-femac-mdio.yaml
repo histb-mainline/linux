@@ -21,11 +21,14 @@ properties:
 
   clocks:
     maxItems: 1
+    description: |
+      The PHY-side clock the bus runs off. hi3798mv200 supplies it through the
+      MAC node ("phy" of that node's clock-names) and leaves this cell out;
+      hi3798mv100 keeps it here, unnamed.
 
 required:
   - compatible
   - reg
-  - clocks
 
 unevaluatedProperties: false
 
@@ -34,7 +37,6 @@ examples:
     mdio@10091100 {
         compatible = "hisilicon,hisi-femac-mdio";
         reg = <0x10091100 0x20>;
-        clocks = <&clk_mdio>;
         #address-cells = <1>;
         #size-cells = <0>;
 
