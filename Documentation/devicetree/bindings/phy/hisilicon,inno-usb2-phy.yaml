@@ -70,7 +70,7 @@ additionalProperties: false
 
 examples:
   - |
-    #include <dt-bindings/clock/histb-clock.h>
+    #include <dt-bindings/clock/hisilicon,hi3798cv200-crg.h>
 
     usb2-phy@120 {
         compatible = "hisilicon,hi3798cv200-usb2-phy";
