@@ -50,22 +50,33 @@ struct hisi_pll {
 
 #define to_hisi_pll(_hw) container_of(_hw, struct hisi_pll, hw)
 
+/*
+ * Read the dividers the hardware was left with. The clock core computes a rate
+ * during registration and may run determine_rate() before prepare(), so the
+ * dividers cannot first be sampled in prepare().
+ */
+static void hisi_pll_read_config(struct hisi_pll *pll)
+{
+	u32 reg0 = readl(pll->base + HISI_PLL_CFG(0));
+	u32 reg1 = readl(pll->base + HISI_PLL_CFG(1));
+
+	pll->postdiv1 = FIELD_GET(HISI_PLL_POSTDIV1, reg0);
+	pll->postdiv2 = FIELD_GET(HISI_PLL_POSTDIV2, reg0);
+	pll->refdiv = FIELD_GET(HISI_PLL_REFDIV, reg1);
+	pll->divisor = pll->refdiv * pll->postdiv1 * pll->postdiv2;
+}
+
 static int hisi_pll_prepare(struct clk_hw *hw)
 {
 	struct hisi_pll *pll = to_hisi_pll(hw);
 	u32 reg;
 
-	reg = readl(pll->base + HISI_PLL_CFG(0));
-	pll->postdiv1 = FIELD_GET(HISI_PLL_POSTDIV1, reg);
-	pll->postdiv2 = FIELD_GET(HISI_PLL_POSTDIV2, reg);
+	hisi_pll_read_config(pll);
+
 	// We don't use frac, clear it
+	reg = readl(pll->base + HISI_PLL_CFG(0));
 	reg &= ~HISI_PLL_FRAC;
 	writel(reg, pll->base + HISI_PLL_CFG(0));
-
-	reg = readl(pll->base + HISI_PLL_CFG(1));
-	pll->refdiv = FIELD_GET(HISI_PLL_REFDIV, reg);
-
-	pll->divisor = pll->refdiv * pll->postdiv1 * pll->postdiv2;
 
 	// return -EINVAL if boot loader does not init PLL correctly
 	if (pll->divisor == 0) {
@@ -79,7 +90,7 @@ static int hisi_pll_prepare(struct clk_hw *hw)
 static int hisi_pll_set_rate(struct clk_hw *hw, ulong rate, ulong parent_rate)
 {
 	struct hisi_pll *pll = to_hisi_pll(hw);
-	u64 fbdiv = rate * pll->divisor;
+	u64 fbdiv = (u64)rate * pll->divisor;
 	u32 reg;
 
 	do_div(fbdiv, parent_rate);
@@ -97,19 +108,27 @@ static int hisi_pll_set_rate(struct clk_hw *hw, ulong rate, ulong parent_rate)
 static int hisi_pll_determine_rate(struct clk_hw *hw, struct clk_rate_request *req)
 {
 	struct hisi_pll *pll = to_hisi_pll(hw);
-	u64 vco, ref_rate = req->best_parent_rate;
+	u64 rem, vco, ref_rate = req->best_parent_rate;
 
 	if (ref_rate == 0)
 		return -EINVAL;
+	if (!pll->refdiv || !pll->postdiv1 || !pll->postdiv2)
+		return -EINVAL;
 
 	do_div(ref_rate, pll->refdiv);
-	vco = clamp(req->rate * (pll->postdiv1 * pll->postdiv2),
-		    HISI_PLL_FOUTVCO_MIN_RATE, HISI_PLL_FOUTVCO_MAX_RATE);
-	vco = rounddown(vco, ref_rate);
+
+	/* The VCO, not the requested rate, is what has to stay in range. */
+	vco = (u64)req->rate * pll->postdiv1 * pll->postdiv2;
+	vco = clamp(vco, (u64)HISI_PLL_FOUTVCO_MIN_RATE,
+		    (u64)HISI_PLL_FOUTVCO_MAX_RATE);
+
+	/* Round the VCO down to a whole multiple of the reference rate. */
+	div64_u64_rem(vco, ref_rate, &rem);
+	vco -= rem;
 	if (vco < HISI_PLL_FOUTVCO_MIN_RATE)
 		vco += ref_rate;
 
-	do_div(vco, pll->postdiv1 * pll->postdiv2);
+	vco = div64_u64(vco, (u64)pll->postdiv1 * pll->postdiv2);
 	req->rate = vco;
 
 	return 0;
@@ -118,14 +137,18 @@ static int hisi_pll_determine_rate(struct clk_hw *hw, struct clk_rate_request *r
 static ulong hisi_pll_recalc_rate(struct clk_hw *hw, ulong parent_rate)
 {
 	struct hisi_pll *pll = to_hisi_pll(hw);
+	u64 rate = parent_rate;
 	u32 reg, fbdiv;
+
+	if (!pll->divisor)
+		return 0;
 
 	reg = readl(pll->base + HISI_PLL_CFG(1));
 	fbdiv = FIELD_GET(HISI_PLL_FBDIV, reg);
-	parent_rate *= fbdiv;
-	do_div(parent_rate, pll->divisor);
+	rate *= fbdiv;
+	do_div(rate, pll->divisor);
 
-	return parent_rate;
+	return rate;
 }
 
 static const struct clk_ops hisi_pll_ops = {
@@ -164,6 +187,7 @@ struct clk *devm_clk_register_hisi_pll(struct device *dev, const char *name, con
 	init.num_parents = 1;
 
 	pll->base = reg;
+	hisi_pll_read_config(pll);
 	pll->hw.init = &init;
 
 	return devm_clk_register(dev, &pll->hw);
