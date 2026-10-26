@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * PSCI-chain variant of the Skyworth Hi3798MV200H board description.
+ *
+ * This build is started by upstream TF-A BL31 (plat/hisilicon/hi3798mv200h,
+ * RESET_TO_BL31, entered at EL2 by the ARM32 stage1), not by the spin-table
+ * trampoline and not by the vendor fastboot's `bootm`.  It differs from the
+ * shipping board file in the firmware-interface bits only:
+ *
+ *   - the dtsi's psci node (arm,psci-1.0, method smc) stays and the cpus keep
+ *     enable-method = "psci": SMP comes through PSCI CPU_ON and reboot through
+ *     PSCI SYSTEM_RESET.  &wdg0 is left in the shape the board file gives it --
+ *     BL31's system_reset counts on the wdg0 clock gate being open, and the
+ *     sp805 driver's own behaviour on this part is a thing to measure, not to
+ *     work around.
+ *   - BL31 is resident for the whole kernel run (every PSCI call lands in it),
+ *     and its .data/.bss/stacks live in ordinary RAM the kernel would hand out
+ *     as page frames, so that window gets a no-map reservation: 0x02001000 for
+ *     0x14000 (image base == reset vector, plus the witness block the chain
+ *     reads back after a reset).
+ *   - bootargs cannot come from the fastboot env on this path, so /chosen
+ *     carries them.  panic=15 stays until PSCI SYSTEM_RESET is proven on this
+ *     chain; the bringup-era knobs (idle=poll, nohz=off, cpuidle.off) are gone
+ *     because the tick is now delivered and because they mask cpufreq/cpuidle,
+ *     which this board file is supposed to describe honestly.
+ *   - the console clock is the shipping one (&sysctrl HI3798MV200_UART0_CLK),
+ *     not the fixed 75 MHz arm used while the tick was still missing: if the
+ *     console is illegible with the real clock, that is a finding, not
+ *     something to paper over here.
+ *
+ * Bench toggles (e.g. disabling the watchdog for a long interactive round) are
+ * applied to the compiled dtb with fdtput at staging time, so one source serves
+ * both profiles.
+ */
+
+#include "hi3798mv200h-skyworth-stb.dts"
+
+/ {
+	chosen {
+		stdout-path = "serial0:115200n8";
+		bootargs = "keep_bootcon loglevel=8 earlycon=pl011,0xf8b00000 console=ttyAMA0,115200 nokaslr panic=15 clk_ignore_unused histb_vdp4.vdp_oem_copy=1";
+	};
+
+	reserved-memory {
+		/* TF-A BL31, resident at EL3: PSCI entry, context, stacks. */
+		bl31: bl31@2001000 {
+			reg = <0x0 0x02001000 0x0 0x00014000>;
+			no-map;
+		};
+
+		/*
+		 * A low, reusable pool for the display surfaces: the OEM keeps its
+		 * graphics fetch address at 0x00d25d00 while this board's framebuffer
+		 * otherwise lands in the default CMA at the top of the 1 GiB.
+		 * "reusable" is what makes this a CMA area -- without it the region is
+		 * set up as a dma pool and binding it to the device fails with -EINVAL,
+		 * which takes the whole display probe down.
+		 */
+		display_pool: display-pool@1000000 {
+			compatible = "shared-dma-pool";
+			reusable;
+			reg = <0x0 0x01000000 0x0 0x01000000>;
+		};
+	};
+};
+
+/*
+ * Display line on this board: the VDP v4 engine and the HDMI transmitter
+ * downstream of it, both board-tested for scan-out but not for the hot-plug
+ * interrupt, so this stays a board-file decision rather than a default.
+ */
+&vdp {
+	status = "okay";
+};
+
+&hdmi {
+	status = "okay";
+};

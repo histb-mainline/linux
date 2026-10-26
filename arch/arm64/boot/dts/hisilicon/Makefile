@@ -4,6 +4,7 @@ dtb-$(CONFIG_ARCH_HISI) += hi3670-hikey970.dtb
 dtb-$(CONFIG_ARCH_HISI) += hi3798cv200-poplar.dtb
 dtb-$(CONFIG_ARCH_HISI) += hi3798mv200-hc2910-2aghd05.dtb
 dtb-$(CONFIG_ARCH_HISI) += hi3798mv200h-skyworth-stb.dtb
+dtb-$(CONFIG_ARCH_HISI) += hi3798mv200h-skyworth-stb-psci.dtb
 dtb-$(CONFIG_ARCH_HISI) += hi3798mv200h-skyworth-stb-tramp.dtb
 dtb-$(CONFIG_ARCH_HISI) += hi3798mv200h-skyworth-stb-tramp-nowdt.dtb
 dtb-$(CONFIG_ARCH_HISI) += hi6220-hikey.dtb
