@@ -54,6 +54,7 @@ struct hisi_inno_phy_priv {
 	struct clk *ref_clk;
 	struct reset_control *por_rst;
 	unsigned int type;
+	unsigned int num_ports;
 	struct hisi_inno_phy_port ports[INNO_PHY_PORT_NUM];
 };
 
@@ -88,6 +89,8 @@ static void hisi_inno_phy_write_reg(struct hisi_inno_phy_priv *priv,
 
 static void hisi_inno_phy_setup(struct hisi_inno_phy_priv *priv)
 {
+	int i;
+
 	/*
 	 * Hi3798MV200 has no test port: the window base is the first register
 	 * of the port's own register file, so strobing a test word there is a
@@ -97,8 +100,9 @@ static void hisi_inno_phy_setup(struct hisi_inno_phy_priv *priv)
 	if (priv->type == PHY_TYPE_2)
 		return;
 
-	/* The phy clk is controlled by the port0 register 0x06. */
-	hisi_inno_phy_write_reg(priv, 0, 0x06, PHY_CLK_ENABLE);
+	/* The phy clk is controlled by the port register 0x06. */
+	for (i = 0; i < priv->num_ports; i++)
+		hisi_inno_phy_write_reg(priv, i, 0x06, PHY_CLK_ENABLE);
 	msleep(PHY_CLK_STABLE_TIME);
 }
 
@@ -196,6 +200,8 @@ static int hisi_inno_phy_probe(struct platform_device *pdev)
 			break;
 		}
 	}
+
+	priv->num_ports = i;
 
 	provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
 	return PTR_ERR_OR_ZERO(provider);
