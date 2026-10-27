@@ -1353,6 +1353,7 @@ static int histb_jpge_queue_init(void *priv, struct vb2_queue *src_vq,
 
 static const struct of_device_id histb_jpge_of_match[] = {
 	{ .compatible = "hisilicon,hi3798mv100-jpge" },
+	{ .compatible = "hisilicon,hi3716cv200-jpge" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, histb_jpge_of_match);
@@ -1472,6 +1473,12 @@ err_assert:
 err_unregister:
 	video_unregister_device(jpge->vdev);
 	jpge->vdev = NULL;
+	/*
+	 * video_unregister_device() already drops the last reference, so the
+	 * release callback frees the node here; video_device_release() below
+	 * is only for a registration that never got that far.
+	 */
+	goto err_m2m;
 err_vdev:
 	video_device_release(vdev);
 err_m2m:

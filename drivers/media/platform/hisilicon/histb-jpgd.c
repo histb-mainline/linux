@@ -136,6 +136,19 @@
 #define JPGD_RESET_BUDGET_US	1000
 
 /*
+ * struct histb_jpgd_chip - what this generation of the block exposes
+ * @has_mmu_bypass: JPGD_REG_MMU_BYPASS (0x134) belongs to the SMMU-facing front
+ *                  end. Hi3798MV100's register file names it and the vendor
+ *                  driver programs it; Hi3716CV200's own file
+ *                  (msp/drv/jpeg/include/hi_jpeg_reg.h) has no name at 0x134 at
+ *                  all -- its map runs 0x130 then 0x200 -- so on that part the
+ *                  word is reserved and is left alone.
+ */
+struct histb_jpgd_chip {
+	bool has_mmu_bypass;
+};
+
+/*
  * struct histb_jpgd - one JPGD instance
  * @hw_lock: the block decodes one picture at a time, so a job holds it from its
  *	     first table write to its completion; that also leaves @int_state and
@@ -143,6 +156,7 @@
  */
 struct histb_jpgd {
 	struct device		*dev;
+	const struct histb_jpgd_chip *chip;
 	void __iomem		*regs;
 	struct clk		*clk;
 	struct reset_control	*rst;
@@ -634,7 +648,8 @@ static void histb_jpgd_program(struct histb_jpgd *jpgd,
 	dma_addr_t data = stream_dma + JPGD_STREAM_MARGIN;
 	dma_addr_t end = data + payload;
 
-	writel(JPGD_MMU_BYPASS_ALL, jpgd->regs + JPGD_REG_MMU_BYPASS);
+	if (jpgd->chip->has_mmu_bypass)
+		writel(JPGD_MMU_BYPASS_ALL, jpgd->regs + JPGD_REG_MMU_BYPASS);
 	writel(dri, jpgd->regs + JPGD_REG_DRI);
 
 	writel(FIELD_PREP(JPGD_PICSIZE_X, pic->mcu_x) |
@@ -1289,8 +1304,22 @@ static int histb_jpgd_queue_init(void *priv, struct vb2_queue *src_vq,
 	return vb2_queue_init(dst_vq);
 }
 
+static const struct histb_jpgd_chip histb_jpgd_chip_mv100 = {
+	.has_mmu_bypass = true,
+};
+
+static const struct histb_jpgd_chip histb_jpgd_chip_cv200 = {
+	.has_mmu_bypass = false,
+};
+
 static const struct of_device_id histb_jpgd_of_match[] = {
-	{ .compatible = "hisilicon,hi3798mv100-jpgd" },
+	{
+		.compatible = "hisilicon,hi3798mv100-jpgd",
+		.data = &histb_jpgd_chip_mv100,
+	}, {
+		.compatible = "hisilicon,hi3716cv200-jpgd",
+		.data = &histb_jpgd_chip_cv200,
+	},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, histb_jpgd_of_match);
@@ -1306,6 +1335,9 @@ static int histb_jpgd_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	jpgd->dev = &pdev->dev;
+	jpgd->chip = of_device_get_match_data(&pdev->dev);
+	if (!jpgd->chip)
+		return dev_err_probe(&pdev->dev, -ENODEV, "unknown device\n");
 	platform_set_drvdata(pdev, jpgd);
 	mutex_init(&jpgd->hw_lock);
 	mutex_init(&jpgd->vdev_lock);
@@ -1410,6 +1442,12 @@ err_assert:
 err_unregister:
 	video_unregister_device(jpgd->vdev);
 	jpgd->vdev = NULL;
+	/*
+	 * video_unregister_device() already drops the last reference, so the
+	 * release callback frees the node here; video_device_release() below
+	 * is only for a registration that never got that far.
+	 */
+	goto err_m2m;
 err_vdev:
 	video_device_release(vdev);
 err_m2m:
