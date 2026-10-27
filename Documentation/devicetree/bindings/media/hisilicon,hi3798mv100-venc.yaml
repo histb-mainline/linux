@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/hisilicon,hi3798mv100-venc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon HiSTB video encoder (VEDU)
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+description: |-
+  The H.264 encoder of the Hi3798MV100 family, which this generation of the
+  vendor driver calls VEDU v1.0. It is a block of its own, with its own register
+  window, interrupt line and clock gate, and unlike the stateless decoders of
+  the family it is a coding engine: it takes raw pictures and produces network
+  abstraction layer data, so it keeps reconstruction buffers of its own and a
+  ring buffer for the coded stream.
+
+  This block is a different generation from the one on Hi3798CV200, and the two
+  register files are not interchangeable.
+
+  Hi3716CV200 carries the same block: the vendor build for that part names its
+  register file r008 while the Hi3798MV100 build names s5v100
+  (msp/drv/venc/Makefile:26-29,73-74 with hal_venc.h:11-16), and the two decoded
+  views agree on every offset -- 193 named registers, no offset differing, both
+  files 65300 bytes long -- with the Hi3798MV100 view additionally decoding a
+  colour-space-conversion coefficient block (seven registers and one mode bit)
+  that the other part leaves reserved. The silicon is present on Hi3716CV200: at
+  the revision word 0xf8c800fc it answers 0x56325238, the string "V2R8", on a
+  board whose window the vendor clock gate keeps reachable. No board config in
+  the vendor SDK enables it, so this is the first driver to program it there.
+
+properties:
+  compatible:
+    enum:
+      - hisilicon,hi3798mv100-venc
+      - hisilicon,hi3716cv200-venc
+
+  reg:
+    maxItems: 1
+    description: |-
+      Register window. The vendor driver maps the whole 64 KiB it needs, which
+      covers the quantisation scale list at 0x5e00.
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: venc
+
+  resets:
+    maxItems: 1
+    description: The block's own reset request in the clock and reset generator.
+
+  reset-names:
+    const: venc
+
+  memory-region:
+    maxItems: 1
+    description: |-
+      Phandle to a reserved memory region to allocate buffers from. The block is
+      programmed with single physical addresses and has no MMU here, so its
+      picture, reconstruction and stream buffers have to be physically
+      contiguous. Without this property they are taken from the default CMA area.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/hisilicon,hi3798mv100-crg.h>
+
+    video-encoder@8c80000 {
+        compatible = "hisilicon,hi3798mv100-venc";
+        reg = <0x8c80000 0x10000>;
+        interrupts = <GIC_SPI 101 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&crg HI3798MV100_VENC_CLK>;
+        clock-names = "venc";
+        resets = <&crg 0x8c 4>;
+        reset-names = "venc";
+    };
