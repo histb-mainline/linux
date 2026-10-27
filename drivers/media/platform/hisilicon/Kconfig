@@ -42,3 +42,20 @@ config VIDEO_HISTB_JPGE
 	  To compile this driver as a module, choose M here: the module will be
 	  called histb-jpge.
 
+config VIDEO_HISTB_VENC
+	tristate "HiSilicon HiSTB H.264 encoder driver"
+	depends on ARCH_HISI || COMPILE_TEST
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	help
+	  Support for the VEDU hardware H.264 encoder on HiSilicon Hi3798MV100
+	  and Hi3716CV200 set-top-box SoCs. The driver encodes one 8-bit
+	  semi-planar picture per mem2mem job as an IDR frame with CAVLC, writes
+	  the sequence and picture
+	  parameter sets and the slice header the block does not produce itself,
+	  and reads the coded packets back out of the ring buffer it programs.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called histb-venc.
