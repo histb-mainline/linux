@@ -126,6 +126,7 @@ properties:
       - rc-real-audio-220-32-keys
       - rc-reddo
       - rc-siemens-gigaset-rc20
+      - rc-skyworth-yk
       - rc-snapstream-firefly
       - rc-streamzap
       - rc-su3000
