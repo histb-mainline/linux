@@ -1,13 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver core for the HiSilicon Hi3798MV100 stateless video decoder (VDH).
  *
- * The VDM decodes one frame at a time from a downstream message pool that
- * the driver fills with fully parsed syntax submitted through V4L2 stateless
- * controls. A job is the pair of one OUTPUT (coded slice data) and one
- * CAPTURE (16x16-tiled NV21) buffer; dev->hw_lock is held from job start to
- * job end and a watchdog recovers the hardware through a reset pulse when
- * the frame-done interrupt never arrives.
+ * The VDM decodes one frame at a time from a downstream message pool that the
+ * driver fills with fully parsed syntax submitted through V4L2 stateless
+ * controls. A job is the pair of one OUTPUT (coded slice data) and one CAPTURE
+ * (16x16-tiled NV21) buffer; dev->hw_lock is held from job start to job end and
+ * a watchdog recovers the hardware through a reset pulse when the frame-done
+ * interrupt never arrives.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -19,6 +19,7 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
@@ -38,8 +39,8 @@
 
 /*
  * The codec descriptors are extern objects, so C can not aggregate them into
- * the by-value histb_vdec_fmts[] array the driver contract declares; the
- * list is carried as pointers instead.
+ * the by-value histb_vdec_fmts[] array the driver contract declares; the list
+ * is carried as pointers instead.
  */
 static const struct histb_vdec_fmt_desc *const histb_vdec_fmt_list[] = {
 	&histb_vdec_h264_fmt,
@@ -47,6 +48,16 @@ static const struct histb_vdec_fmt_desc *const histb_vdec_fmt_list[] = {
 	&histb_vdec_mpeg2_fmt,
 	&histb_vdec_mpeg4_fmt,
 	&histb_vdec_h263_fmt,
+	/*
+	 * VP8 is implemented (histb_vdec_vp8.c) but deliberately not
+	 * registered: the VDM seeds its macroblock-layer bool decoder from a
+	 * live 24-bit residue plus a count that depends on the symbol history
+	 * (measured on the board: with both injected, the reference frame
+	 * reproduces fully), and struct v4l2_vp8_entropy_coder_state carries
+	 * only 8 bits of value, so no driver can compute the seed from the
+	 * control. Doing it properly needs that control to carry the full live
+	 * coder value and the count its header parse stops at.
+	 */
 };
 
 /*
@@ -350,9 +361,9 @@ static int histb_vdec_s_fmt_out(struct file *file, void *priv,
 	/*
 	 * Defensive: histb_vdec_try_fmt_out() above snapped the client's fourcc
 	 * onto a registered descriptor, so this lookup only returns NULL if a
-	 * negotiable format were ever missing from histb_vdec_fmt_list[]; refuse
-	 * rather than store a NULL desc whose codec ops every later job would
-	 * dereference.
+	 * negotiable format were ever missing from histb_vdec_fmt_list[];
+	 * refuse rather than store a NULL desc whose codec ops every later job
+	 * would dereference.
 	 */
 	if (!desc)
 		return -EINVAL;
@@ -599,10 +610,9 @@ static int histb_vdec_queue_init(void *priv, struct vb2_queue *src_vq,
 	src_vq->ops = &histb_vdec_queue_ops;
 	src_vq->mem_ops = &vb2_dma_contig_memops;
 	/*
-	 * The driver reads the bitstream in the kernel (slice delimitation,
-	 * the VP8 bool-decoder seed), so the plane must keep a kernel
-	 * mapping; DMA_ATTR_NO_KERNEL_MAPPING would leave vb2_plane_vaddr()
-	 * NULL.
+	 * The driver reads the bitstream in the kernel (slice delimitation, the
+	 * VP8 bool-decoder seed), so the plane must keep a kernel mapping;
+	 * DMA_ATTR_NO_KERNEL_MAPPING would leave vb2_plane_vaddr() NULL.
 	 */
 	src_vq->dma_attrs = DMA_ATTR_ALLOC_SINGLE_PAGES;
 	src_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
@@ -629,12 +639,12 @@ static int histb_vdec_queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->dev = dev->v4l2_dev.dev;
 	/*
 	 * The downstream message tables reference frames through the 16-slot
-	 * APC/POC arrays; buffer index is the APC slot, so more buffers
-	 * would be impossible to address.  vb2 core rejects
-	 * max_num_buffers < VB2_MAX_FRAME, so the cap is enforced in
-	 * ->queue_setup() instead; that makes VIDIOC_CREATE_BUFS clamp to the
-	 * queue's own buffer ceiling rather than reaching 32, the same shape the
-	 * in-tree st/delta driver uses.
+	 * APC/POC arrays; buffer index is the APC slot, so more buffers would
+	 * be impossible to address. vb2 core rejects max_num_buffers <
+	 * VB2_MAX_FRAME, so the cap is enforced in ->queue_setup() instead;
+	 * that makes VIDIOC_CREATE_BUFS clamp to the queue's own buffer ceiling
+	 * rather than reaching 32, the same shape the in-tree st/delta driver
+	 * uses.
 	 */
 	dst_vq->min_queued_buffers = 4;
 
@@ -687,11 +697,11 @@ void histb_vdec_buf_geom(struct histb_vdec_ctx *ctx, unsigned int *stride,
  * @dev: decoder device
  * @out: filled with the job record on success
  *
- * Completion paths (IRQ thread, watchdog, failed assembly) race for the
- * single slot; the first caller that finds it running wins and empties the
- * record in the same critical section, so late completers of a stale frame
- * are a harmless no-op. The completion itself runs lock-free: hw_lock only
- * covers assembly, and the mem2mem core owns the job transition.
+ * Completion paths (IRQ thread, watchdog, failed assembly) race for the single
+ * slot; the first caller that finds it running wins and empties the record in
+ * the same critical section, so late completers of a stale frame are a harmless
+ * no-op. The completion itself runs lock-free: hw_lock only covers assembly,
+ * and the mem2mem core owns the job transition.
  *
  * Return: true when the caller owns the completion.
  */
@@ -719,9 +729,9 @@ static bool histb_vdec_job_take(struct histb_vdec_dev *dev,
  * @job: job record claimed with histb_vdec_job_take()
  * @state: state to complete both buffers with
  *
- * The mem2mem core picks the buffers of this context's job off its ready
- * lists, so a completion that only called v4l2_m2m_buf_done() would leave the
- * buffers queued and the core would immediately start the same frame again.
+ * The mem2mem core picks the buffers of this context's job off its ready lists,
+ * so a completion that only called v4l2_m2m_buf_done() would leave the buffers
+ * queued and the core would immediately start the same frame again.
  */
 static void histb_vdec_job_complete(struct histb_vdec_dev *dev,
 				    const struct histb_vdec_job *job,
@@ -737,9 +747,9 @@ static unsigned int histb_vdec_count_slices(u32 state)
 	unsigned int num = FIELD_GET(VDM_STATE_SLICE_NUM, state);
 
 	/*
-	 * The upstream pool carries one 4-word report per decoded slice;
-	 * the per-slice status fields are not interpreted yet, the count
-	 * only feeds the debug output.
+	 * The upstream pool carries one 4-word report per decoded slice; the
+	 * per-slice status fields are not interpreted yet, the count only feeds
+	 * the debug output.
 	 */
 	return min_t(unsigned int, num, HISTB_VDEC_MAX_UP_SLICES);
 }
@@ -750,9 +760,9 @@ static unsigned int histb_vdec_count_slices(u32 state)
  * @priv: decoder device
  *
  * Runs as the threaded half of the frame-done interrupt: reads the decoded
- * slice count from the VDM state word, cancels the watchdog and completes
- * the job. A completion without a job record belongs to the watchdog, which
- * has already finished the frame.
+ * slice count from the VDM state word, cancels the watchdog and completes the
+ * job. A completion without a job record belongs to the watchdog, which has
+ * already finished the frame.
  */
 irqreturn_t histb_vdec_irq_handler(int irq, void *priv)
 {
@@ -763,8 +773,8 @@ irqreturn_t histb_vdec_irq_handler(int irq, void *priv)
 
 	/*
 	 * Use the state the primary handler captured: clearing INT_STATE drops
-	 * the latched frame-done condition, so a re-read here would already show
-	 * an idle VDM and the job would never be completed.
+	 * the latched frame-done condition, so a re-read here would already
+	 * show an idle VDM and the job would never be completed.
 	 */
 	state = dev->irq_state;
 	if (!(state & VDM_STATE_DEC_OVER))
@@ -779,8 +789,8 @@ irqreturn_t histb_vdec_irq_handler(int irq, void *priv)
 
 	/*
 	 * A picture the engine itself flagged as failed leaves the VDM pipeline
-	 * in a state the next frame cannot be programmed out of: measured on the
-	 * board, an MPEG-2 picture that ended with DEC_ERR set made every
+	 * in a state the next frame cannot be programmed out of: measured on
+	 * the board, an MPEG-2 picture that ended with DEC_ERR set made every
 	 * subsequent frame hang (H.264 alone 4/4 clean, H.264 right after one
 	 * MPEG-2 picture 8/8 timed out with the engine not reading a single
 	 * macroblock), and only the CRG reset recovered it. Reset here so an
@@ -797,9 +807,9 @@ irqreturn_t histb_vdec_irq_handler(int irq, void *priv)
 }
 
 /*
- * Claim the frame-done interrupt for the threaded handler: the VDM latches
- * the condition until the interrupt state register is cleared, which is
- * also what deasserts the level-triggered line.
+ * Claim the frame-done interrupt for the threaded handler: the VDM latches the
+ * condition until the interrupt state register is cleared, which is also what
+ * deasserts the level-triggered line.
  */
 static bool histb_vdec_hw_irq_status(struct histb_vdec_dev *dev, u32 *state)
 {
@@ -835,13 +845,13 @@ static void histb_vdec_watchdog(struct work_struct *work)
 	if (!histb_vdec_job_take(dev, &job))
 		return;
 
-	/* Claimed: the frame is ours to recover, and no IRQ thread can
-	 * complete it from under us any more.
+	/* Claimed: the frame is ours to recover, and no IRQ thread can complete
+	 * it from under us any more.
 	 *
-	 * The state and the per-picture counters have to be read here: the reset
-	 * below wipes them, and a timeout whose engine never asked for a single
-	 * read is a different bug from one that decoded the whole picture without
-	 * ever raising end-of-video.
+	 * The state and the per-picture counters have to be read here: the
+	 * reset below wipes them, and a timeout whose engine never asked for a
+	 * single read is a different bug from one that decoded the whole
+	 * picture without ever raising end-of-video.
 	 */
 	dev_err(dev->dev,
 		"frame decode timed out (state=%#010x int=%#010x cycle=%u rd=%u wr=%u), resetting the VDM\n",
@@ -909,15 +919,14 @@ static void histb_vdec_device_run(void *priv)
 		dev_dbg(dev->dev, "run refused: %d (out fourcc %4.4s)\n", ret,
 			(char *)&ctx->desc->fourcc);
 		/*
-		 * A refusal must be readable without the buffer flag.  Measured
+		 * A refusal must be readable without the buffer flag. Measured
 		 * on the board, these streams come back with
 		 * V4L2_BUF_FLAG_ERROR set on every capture buffer - the
-		 * pictures that decoded byte-exactly included - so the
-		 * flag cannot separate "the engine never saw this picture" from
-		 * "the engine says it errored".  Zeroing the payload does, and
-		 * the buffer keeps its previous contents underneath: dropping
-		 * them is the client's job once bytesused says nothing was
-		 * written.
+		 * pictures that decoded byte-exactly included - so the flag
+		 * cannot separate "the engine never saw this picture" from "the
+		 * engine says it errored". Zeroing the payload does, and the
+		 * buffer keeps its previous contents underneath: dropping them
+		 * is the client's job once bytesused says nothing was written.
 		 */
 		vb2_set_plane_payload(&dst->vb2_buf, 0, 0);
 		goto err_job;
@@ -930,8 +939,8 @@ static void histb_vdec_device_run(void *priv)
 	 */
 	v4l2_ctrl_request_complete(src->vb2_buf.req_obj.req, &ctx->ctrl_hdl);
 
-	/* hw_lock only guards the assembly and the doorbell; completion
-	 * paths never take it, so it must not stay held across the wait.
+	/* hw_lock only guards the assembly and the doorbell; completion paths
+	 * never take it, so it must not stay held across the wait.
 	 */
 	mutex_unlock(&dev->hw_lock);
 	schedule_delayed_work(&dev->watchdog, HISTB_VDEC_TIMEOUT);
@@ -947,6 +956,7 @@ err_job:
 	return;
 
 err_finish_no_pm:
+	v4l2_ctrl_request_complete(src->vb2_buf.req_obj.req, &ctx->ctrl_hdl);
 	v4l2_m2m_buf_done_and_job_finish(dev->m2m_dev, ctx->fh.m2m_ctx,
 					 VB2_BUF_STATE_ERROR);
 }
@@ -974,8 +984,7 @@ static const struct v4l2_ctrl_ops histb_vdec_ctrl_ops = {
 
 /*
  * The control handlers of all file handles carry the controls of every
- * protocol, like rkvdec; a protocol switch then never needs a handler
- * rebuild.
+ * protocol, like rkvdec; a protocol switch then never needs a handler rebuild.
  */
 static int histb_vdec_init_ctrls(struct histb_vdec_ctx *ctx)
 {
@@ -1118,8 +1127,9 @@ static int histb_vdec_request_validate(struct media_request *req)
 	 * A request drives one decode job, and a job is the pair of one OUTPUT
 	 * and one CAPTURE buffer, so the request must bind an OUTPUT buffer to
 	 * be queueable at all and never more than one: the engine is programmed
-	 * through a single stream base and one slice chain per run, so two coded
-	 * buffers cannot be mapped onto the one job this request schedules.
+	 * through a single stream base and one slice chain per run, so two
+	 * coded buffers cannot be mapped onto the one job this request
+	 * schedules.
 	 */
 	if (!count)
 		return -ENOENT;
@@ -1140,9 +1150,9 @@ static void histb_vdec_v4l2_cleanup(struct histb_vdec_dev *dev)
 	video_unregister_device(dev->vdev);
 	v4l2_m2m_unregister_media_controller(dev->m2m_dev);
 	/*
-	 * The unregister drained every file handle, so no new job can
-	 * start; kill the watchdog before the mem2mem device it completes
-	 * through goes away.
+	 * The unregister drained every file handle, so no new job can start;
+	 * kill the watchdog before the mem2mem device it completes through goes
+	 * away.
 	 */
 	cancel_delayed_work_sync(&dev->watchdog);
 	v4l2_m2m_release(dev->m2m_dev);
@@ -1270,9 +1280,9 @@ static int histb_vdec_pool_alloc(struct histb_vdec_dev *dev)
 	struct histb_vdec_msgpool *pool = &dev->pool;
 
 	/*
-	 * pic slot, slice slots, upstream report slots and the protocol
-	 * table area (CABAC M/N tables, tile info, ppfd and the band-line
-	 * scratch blocks) must all fit in the single pool.
+	 * pic slot, slice slots, upstream report slots and the protocol table
+	 * area (CABAC M/N tables, tile info, ppfd and the band-line scratch
+	 * blocks) must all fit in the single pool.
 	 */
 	BUILD_BUG_ON(ALIGN(HISTB_VDEC_SLOT_BYTES +
 			   HISTB_VDEC_MAX_SLICE_SLOTS * HISTB_VDEC_SLOT_BYTES +
@@ -1363,6 +1373,21 @@ static int histb_vdec_probe(struct platform_device *pdev)
 	}
 	vb2_dma_contig_set_max_seg_size(&pdev->dev, DMA_BIT_MASK(32));
 
+	/*
+	 * Every buffer this engine uses has to be physically contiguous: the
+	 * queues are dma-contig, and the message pool is handed to the hardware
+	 * as one base address (VDM_AVM_ADDR). Bind the region named by
+	 * "memory-region" before the first allocation so that they come out of
+	 * the media pool instead of competing with every other client for the
+	 * default CMA area. A DTB that draws no such pool is not an error
+	 * (-ENODEV): the device then keeps using the default area.
+	 */
+	ret = devm_of_reserved_mem_device_init(&pdev->dev);
+	if (ret && ret != -ENODEV) {
+		dev_err(&pdev->dev, "failed to bind reserved memory\n");
+		return ret;
+	}
+
 	ret = histb_vdec_pool_alloc(dev);
 	if (ret)
 		return ret;
@@ -1374,8 +1399,8 @@ static int histb_vdec_probe(struct platform_device *pdev)
 	pm_runtime_enable(&pdev->dev);
 
 	/*
-	 * The decoder comes up held in reset; release it, mask every
-	 * interrupt source and only then register the handler.
+	 * The decoder comes up held in reset; release it, mask every interrupt
+	 * source and only then register the handler.
 	 */
 	ret = reset_control_deassert(dev->rst);
 	if (ret)
