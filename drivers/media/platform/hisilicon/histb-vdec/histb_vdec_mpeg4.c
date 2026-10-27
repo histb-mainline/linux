@@ -2108,8 +2108,11 @@ static int histb_vdec_mpeg4_run(struct histb_vdec_ctx *ctx,
 			 * interface has no control for.
 			 */
 			if (!m4->pp_time || m4->pp_time <= pb ||
-			    m4->pp_time <= m4->pp_time - pb)
-				return -EINVAL;	/* the vendor drops this frame */
+			    m4->pp_time <= m4->pp_time - pb) {
+				/* the vendor drops this frame */
+				ret = -EINVAL;
+				goto out;
+			}
 			trb = pb;
 			trd = m4->pp_time;
 		}
