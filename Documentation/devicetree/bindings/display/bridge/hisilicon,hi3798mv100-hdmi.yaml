@@ -4,22 +4,24 @@
 $id: http://devicetree.org/schemas/display/bridge/hisilicon,hi3798mv100-hdmi.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: HiSilicon Hi3798MV100 HDMI transmitter (SiI9134 core)
+title: HiSilicon HiSTB HDMI transmitter (SiI9134 core)
 
 maintainers:
   - David Yang <mmyangfl@gmail.com>
 
 description: |
-  The HDMI 1.4 transmitter of the HiSilicon Hi3798MV100, a Silicon Image SiI9134
-  core plus an on-chip PHY. The two I2C banks of the standalone part are
-  flattened into one register window, bank 0 at the base, bank 1 at offset 0x400
-  and the 32-bit PHY registers at offset 0x1800, so a single 64 KiB reg entry
-  covers all three.
+  The HDMI 1.4 transmitter of the HiSilicon Hi3798MV100 and Hi3716CV200, a
+  Silicon Image SiI9134 core plus an on-chip PHY. The two I2C banks of the
+  standalone part are flattened into one register window, bank 0 at the base,
+  bank 1 at offset 0x400 and the 32-bit PHY registers at offset 0x1800, so a
+  single 64 KiB reg entry covers all three.
 
   The clock gates of the block are two groups in the CRG, one for the controller
   (PERI_CRG67 bits 5:0) and one for the PHY (PERI_CRG68 bit 0), and both are
   exposed as clocks. A reset request only reaches the block while it is clocked,
-  so the driver enables them before it pulses the reset lines below.
+  so the driver enables them before it pulses the reset lines below. Both SoCs
+  keep the controller reset in PERI_CRG67 bits 9 and 8 and the PHY reset in
+  PERI_CRG68 bit 4, which is what the reset cells below name.
 
   The transmitter's own reduced DDC master is registered as an I2C bus carrying
   this node's of_node, so the EDID is read over that bus and a connector node
@@ -27,7 +29,9 @@ description: |
 
 properties:
   compatible:
-    const: hisilicon,hi3798mv100-hdmi
+    enum:
+      - hisilicon,hi3798mv100-hdmi
+      - hisilicon,hi3716cv200-hdmi
 
   '#sound-dai-cells':
     const: 0
@@ -103,6 +107,34 @@ examples:
                 reg = <0>;
 
                 hdmi_in_vdp: endpoint {
+                    remote-endpoint = <&vdp_out_hdmi>;
+                };
+            };
+        };
+    };
+  - |
+    #include <dt-bindings/clock/hisilicon,hi3716cv200-crg.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    hdmi@f8ce0000 {
+        compatible = "hisilicon,hi3716cv200-hdmi";
+        reg = <0xf8ce0000 0x10000>;
+        interrupts = <GIC_SPI 88 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&crg HI3716CV200_HDMITX_CTRL_CLK>,
+                 <&crg HI3716CV200_HDMITX_PHY_CLK>;
+        clock-names = "ctrl", "phy";
+        resets = <&crg 0x10c 9>, <&crg 0x10c 8>, <&crg 0x110 4>;
+        reset-names = "base", "bus", "phy";
+        #sound-dai-cells = <0>;
+
+        ports {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port@0 {
+                reg = <0>;
+
+                cv200_hdmi_in_vdp: endpoint {
                     remote-endpoint = <&vdp_out_hdmi>;
                 };
             };
