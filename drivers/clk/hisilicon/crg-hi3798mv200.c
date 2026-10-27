@@ -817,6 +817,10 @@ static void hi3798mv200_hd_pix_apply(struct hi3798mv200_hd_pix_clock *clk,
 			~(PLL11_DSMPD | PLL11_REFDIV | PLL11_FBDIV)) |
 		       cfg->pll11, clk->pll11);
 
+	/* board test instrument, not for submission */
+	pr_info("hd_pix: rate %lu pll10 %08x pll11 %08x crg54div %08x\n",
+		cfg->rate, cfg->pll10, cfg->pll11, cfg->div);
+
 	writel_relaxed((readl_relaxed(clk->crg54) &
 			~(CRG54_VO_HD_CLK_SEL | CRG54_VO_HD_CLK_DIV)) |
 		       CRG54_VO_HD_CLK_SEL | cfg->div, clk->crg54);
@@ -887,6 +891,10 @@ static int hi3798mv200_hd_pix_prepare(struct clk_hw *hw)
 	 */
 	val &= ~CRG54_VO_HD_HDMI_CLK_SEL;
 	writel_relaxed(val | CRG54_VO_HD_CLK_SEL | CRG54_VO_HD_CKEN, clk->crg54);
+
+	/* board test instrument, not for submission */
+	pr_info("hd_pix: prepare crg54 now %08x applied rate %lu\n",
+		readl_relaxed(clk->crg54), clk->applied_rate);
 
 	return 0;
 }
