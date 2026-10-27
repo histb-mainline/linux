@@ -119,6 +119,14 @@ struct histb_vdp2_chip {
 	bool				dhd_hdmi_mode;
 	bool				mux_hdmi_dhd0;
 	bool				hdate_hdmi_out;
+	/*
+	 * Run the GP0 CSC stage as the component-line unrotation plus the
+	 * limited-range shaping. That contract was established on Hi3716CV200
+	 * (the G0 fetch hands its lines over rotated, see the comment in
+	 * histb_vdp2_pipeline_init()); Hi3798MV100 was verified displaying with
+	 * the stage bypassed, so on it the stage must stay off.
+	 */
+	bool				gp0_csc_cycle;
 };
 
 static const struct histb_vdp2_chip histb_vdp2_mv100 = {
@@ -127,6 +135,7 @@ static const struct histb_vdp2_chip histb_vdp2_mv100 = {
 	.dhd_intf_b = true,
 	.dhd_hdmi_mode = true,
 	.mux_hdmi_dhd0 = false,
+	.gp0_csc_cycle = false,
 };
 
 static const struct histb_vdp2_chip histb_vdp2_cv200 = {
@@ -540,12 +549,46 @@ static void histb_vdp2_pipeline_init(struct histb_vdp2 *vdp)
 	vo_write(vdp, GP0_CTRL, vdp->chip->gp0_order | GP0_CTRL_READ_MODE);
 	vo_write(vdp, GP0_GALPHA, 0xff);
 	/*
-	 * GP0's CSC stage stays bypassed: the interface carries RGB (see
-	 * histb_vdp2_crtc_setup_timing()), so converting to YCbCr here would
-	 * make the transmitter colour-convert its own input. csc_en clears with
-	 * the stage still in the order.
+	 * The G0 fetch delivers its three components to this stage one position
+	 * rotated, and nothing upstream can be changed to fix it: every 32bpp ifmt
+	 * code this chip names only rotates the byte index of the pixel, and no
+	 * 32-bit DRM format composes with that map into the honest assignment (both
+	 * measured on the AR513W). This stage is the one place in the path that reorders the
+	 * component lines, so it carries the inverse cycle, and it still performs no
+	 * colour-space conversion -- the interface carries RGB (see
+	 * histb_vdp2_crtc_setup_timing()) and the transmitter converts on its own.
+	 *
+	 * The gain and the output offsets are the range, not a colour tweak. The
+	 * transmitter's own RGB->YCbCr converter emits full-range luma (board-measured:
+	 * painted red arrives in the stream at Y = 54.0, the BT.709 full-range figure),
+	 * while the AVI InfoFrame the bridge sends declares limited range -- so a receiver
+	 * that obeys the declaration expands a signal that does not need it, and painted
+	 * red reached the capture card at Y = 44.2 instead of 54.2. A common scale and a
+	 * common offset on the three RGB lines fix that without disturbing the lane order:
+	 * the luma weights sum to 1, so Y becomes 219/255*Y + 16 -- limited range exactly --
+	 * and the Cb/Cr weights sum to 0, so the shared offset leaves chroma where it was.
+	 * Those are also the vendor's own two numbers: their live GP0 carries the
+	 * documented BT.709 row multiplied by 0.861 = 219/255, and IODC's output field
+	 * holds 64, which is +16 codes at the SDK's s32DcPre = 4 (measured on the AR513W:
+	 * this gain with odc 0 reads 35.81, with odc 64 it reads 54.72, odc 100 reads
+	 * 64.77, and the unaltered block reads 44.20).
+	 *
+	 * Both halves are chip data, not family constants: every measurement behind
+	 * them was taken on Hi3716CV200, and Hi3798MV100 was verified displaying with
+	 * this stage bypassed, so there it stays bypassed.
 	 */
-	vo_write(vdp, GP0_CSC_IDC, 0);
+	if (vdp->chip->gp0_csc_cycle) {
+		vo_write(vdp, GP0_CSC_ODC, GP0_CSC_DC_ODC);
+		vo_write(vdp, GP0_CSC_IODC, GP0_CSC_DC_IODC);
+		vo_write(vdp, GP0_CSC_P0, GP0_CSC_CYC_P0);
+		vo_write(vdp, GP0_CSC_P1, 0);
+		vo_write(vdp, GP0_CSC_P2, GP0_CSC_CYC_P2);
+		vo_write(vdp, GP0_CSC_P3, GP0_CSC_CYC_P3);
+		vo_write(vdp, GP0_CSC_P4, 0);
+		vo_write(vdp, GP0_CSC_IDC, GP0_CSC_EN);
+	} else {
+		vo_write(vdp, GP0_CSC_IDC, 0);
+	}
 
 	vo_write(vdp, GP0_UPD, GP0_UPD_REGUP);
 }
@@ -925,6 +968,7 @@ static irqreturn_t histb_vdp2_irq_handler(int irq, void *data)
 	/* the line stays requested across an aggregate unbind, no CRTC then */
 	if (disp && (sta & VO_INT_DHD0_VTTHD1))
 		drm_crtc_handle_vblank(&disp->crtc);
+
 	return IRQ_HANDLED;
 }
 

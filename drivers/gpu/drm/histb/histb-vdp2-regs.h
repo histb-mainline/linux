@@ -129,10 +129,39 @@
 #define GP0_VFPOS		0x9108
 #define GP0_VLPOS		0x910c
 /*
- * GP0 CSC stage. Only the enable bit is written: the interface runs in RGB, so
- * the stage stays bypassed and the transmitter does the colour conversion.
+ * GP0 CSC stage: a 3x3 matrix over the three component lines, two signed 15-bit
+ * coefficients per register with unity = 1<<10 (field layout vdp_reg.h:4410-4442,
+ * written by VDP_GP_SetCscCoef() in vdp_driver.c:5831-5868), plus 11-bit input and
+ * output DC offsets scaled by 4 for 8-bit values.
+ *
+ * cv200 needs a matrix here even though the interface runs in RGB: the G0 fetch
+ * hands its three components to the mixer one position rotated, and neither an
+ * ifmt code nor any 32-bit DRM pixel format reaches the honest assignment
+ * (board-measured on the AR513W). GP0_CSC_CYC below is that compensation; the same stage also
+ * carries the 219/255 gain and the +16 code offset that make the luma the
+ * limited range the AVI InfoFrame declares (see the comment on the writes in
+ * histb-vdp2.c).
  */
-#define GP0_CSC_IDC		0x9120	/* cscidc0/1[21:0] csc_en[22] */
+#define GP0_CSC_IDC		0x9120	/* cscidc0/1[10:0][21:11] csc_en[22] */
+#define   GP0_CSC_EN		BIT(22)
+#define GP0_CSC_ODC		0x9124	/* cscodc0/1[10:0][21:11] csc_sign_mode[22] */
+#define GP0_CSC_IODC		0x9128	/* cscidc2[10:0] cscodc2[21:11] */
+#define GP0_CSC_P0		0x912c	/* row 0: coef00[14:0] coef01[30:16] */
+#define GP0_CSC_P1		0x9130	/* row 0 col 2, row 1 col 0 */
+#define GP0_CSC_P2		0x9134	/* row 1: coef11[14:0] coef12[30:16] */
+#define GP0_CSC_P3		0x9138	/* row 2: coef20[14:0] coef21[30:16] */
+#define GP0_CSC_P4		0x913c	/* row 2 col 2: coef22[14:0] */
+#define   GP0_CSC_LIM		(219 * (1 << 10) / 255)	/* = 881: 219/255 in the same Q10 */
+#define   GP0_CSC_DC16		(16 * 4)	/* +16 codes: DC fields are 10-bit */
+#define   GP0_CSC_PAIR(lo, hi)	(FIELD_PREP(GENMASK(14, 0), (lo)) | \
+				 FIELD_PREP(GENMASK(30, 16), (hi)))
+/* out0 = in1, out1 = in2, out2 = in0: the inverse of the fetch's rotation */
+#define GP0_CSC_CYC_P0		GP0_CSC_PAIR(0, GP0_CSC_LIM)
+#define GP0_CSC_CYC_P2		GP0_CSC_PAIR(0, GP0_CSC_LIM)
+#define GP0_CSC_CYC_P3		GP0_CSC_PAIR(GP0_CSC_LIM, 0)
+#define GP0_CSC_DC_ODC		(FIELD_PREP(GENMASK(10, 0), GP0_CSC_DC16) | \
+				 FIELD_PREP(GENMASK(21, 11), GP0_CSC_DC16))
+#define GP0_CSC_DC_IODC		FIELD_PREP(GENMASK(21, 11), GP0_CSC_DC16)
 
 /*
  * GP0 zoom engine step registers: hratio/vratio are the source pixels consumed
