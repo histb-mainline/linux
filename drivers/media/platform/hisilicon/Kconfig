@@ -4,3 +4,22 @@ comment "HiSilicon media platform drivers"
 
 source "drivers/media/platform/hisilicon/histb-vdec/Kconfig"
 
+config VIDEO_HISTB_JPGD
+	tristate "HiSilicon HiSTB JPEG decoder driver"
+	depends on ARCH_HISI || COMPILE_TEST
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	select V4L2_JPEG_HELPER
+	help
+	  Support for the JPGD hardware JPEG decoder on HiSilicon Hi3798MV100
+	  and Hi3716CV200 set-top-box SoCs. The driver parses the baseline JPEG
+	  header in the
+	  kernel, expands the quantiser and Huffman tables into the forms the
+	  block expects, and decodes one picture per mem2mem job into 8-bit
+	  semi-planar YUV.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called histb-jpgd.
+
