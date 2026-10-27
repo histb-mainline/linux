@@ -250,6 +250,24 @@ static irqreturn_t hix5hd2_i2c_irq(int irqno, void *dev_id)
 
 	int_status = hix5hd2_i2c_clr_pend_irq(priv);
 
+	/*
+	 * Bring-up instrument ([LOCAL], remove before submission): on Hi3716CV200 the
+	 * line asserts exactly once per attempt (/proc/interrupts counted ten for ten
+	 * attempts) and the completion never happens, so which SR bits were set when
+	 * the handler read them separates "this chip ends the address phase with
+	 * START/END, which the handling below ignores" from "the block never moved".
+	 * The vendor driver for this chip does not use the interrupt path at all:
+	 * request_irq() sits inside #ifdef EXCHANGE_IN_INTERRUPT, which hi3716cv200
+	 * deliberately leaves undefined (drv_i2c.h:22), and its waits poll SR for
+	 * I2C_OVER/RECEIVE instead (drv_i2c.c:233-278). This line names the event to
+	 * poll for.
+	 */
+	dev_info_ratelimited(priv->dev,
+			     "irq SR=0x%08x state=%d len=%u idx=%u rd=%d stop=%d\n",
+			     int_status, priv->state, priv->msg_len, priv->msg_idx,
+			     priv->msg && (priv->msg->flags & I2C_M_RD) ? 1 : 0,
+			     priv->stop);
+
 	/* handle error */
 	if (int_status & I2C_ARBITRATE_INTR) {
 		/* bus error */
@@ -315,6 +333,7 @@ static int hix5hd2_i2c_xfer_msg(struct hix5hd2_i2c_priv *priv,
 				struct i2c_msg *msgs, int stop)
 {
 	unsigned long time_left;
+	u32 sr0;
 	int ret;
 
 	priv->msg = msgs;
@@ -328,36 +347,66 @@ static int hix5hd2_i2c_xfer_msg(struct hix5hd2_i2c_priv *priv,
 	hix5hd2_i2c_message_start(priv, stop);
 
 	/*
-	 * The event does arrive, only later than the driver is willing to
-	 * wait: on a Hi3716CV200 the handler reported I2C_OVER_INTR (SR bit 0)
-	 * about 30 ms after a 100-jiffies wait -- 1 s at HZ=100 -- had given
-	 * up, ten times in a row.  The vendor driver for this part never uses
-	 * the interrupt path: its request_irq() sits inside
-	 * #ifdef EXCHANGE_IN_INTERRUPT, which hi3716cv200 leaves undefined
-	 * (drv_i2c.h:22), and its waits poll SR for I2C_OVER/RECEIVE instead
-	 * (drv_i2c.c:233-278).  Until that difference is settled, wait in
-	 * slices against a fixed 2 s deadline so a late but real completion
-	 * returns the transaction's own ACK/NACK rather than -ETIMEDOUT.
+	 * [LOCAL] bring-up instrument (and the fix, if the trace says so): wait in
+	 * 10 ms slices and sample SR between them -- read-only, without the
+	 * clear-by-writing hix5hd2_i2c_clr_pend_irq() does.
+	 *
+	 * Why: the previous round's prints put the handler at SR=0x01, which is
+	 * I2C_OVER_INTR, about 30 ms after a 100-jiffies wait (1 s at HZ=100) had
+	 * already given up, ten times in a row. So the event does arrive -- later
+	 * than the driver is willing to wait. That is either a functional clock
+	 * running far below the 100 MHz the divider was computed from, or a late
+	 * delivery; the slice trace names the latency in 10 ms steps, and waiting
+	 * past the usual deadline also lets the transaction finish, so the real
+	 * ACK/NACK comes back instead of -ETIMEDOUT.
 	 */
 	{
 		unsigned long deadline = jiffies + msecs_to_jiffies(2000);
-		unsigned int slice = 0;
+		unsigned int slice = 0, first_at = 0;
+		bool seen = false;
+		u32 sr;
 
 		time_left = 0;
 		while (slice < 200 && time_after(deadline, jiffies)) {
+			sr = readl_relaxed(priv->regs + HIX5I2C_SR);
+			if (sr && !seen) {
+				seen = true;
+				first_at = slice;
+				sr0 = sr;
+			}
 			time_left = wait_for_completion_timeout(&priv->msg_complete,
 								msecs_to_jiffies(10));
 			if (time_left)
 				break;
 			slice++;
 		}
+		dev_info(priv->dev,
+			 "wait: slices=%u completed=%d first SR=0x%08x at slice %u (~%u ms)\n",
+			 slice, time_left != 0, seen ? sr0 : 0, first_at,
+			 first_at * 10);
 	}
+
 	if (time_left == 0) {
 		priv->state = HIX5I2C_STAT_RW_ERR;
 		priv->err = -ETIMEDOUT;
 		dev_warn(priv->dev, "%s timeout=%d\n",
 			 msgs->flags & I2C_M_RD ? "rx" : "tx",
 			 priv->adap.timeout);
+
+		/*
+		 * [LOCAL] bring-up instrument, no side effects: read SR without the
+		 * clear-by-writing that hix5hd2_i2c_clr_pend_irq() does, twice, so the
+		 * log says whether the event was still pending after the waiter gave up
+		 * (late event) or never appeared at all (the block did not move).
+		 */
+		sr0 = readl_relaxed(priv->regs + HIX5I2C_SR);
+		udelay(200);
+		dev_warn(priv->dev,
+			 "post-timeout SR=0x%08x then SR=0x%08x CTRL=0x%08x COM=0x%08x ICR=0x%08x\n",
+			 sr0, readl_relaxed(priv->regs + HIX5I2C_SR),
+			 readl_relaxed(priv->regs + HIX5I2C_CTRL),
+			 readl_relaxed(priv->regs + HIX5I2C_COM),
+			 readl_relaxed(priv->regs + HIX5I2C_ICR));
 	}
 	ret = priv->state;
 
