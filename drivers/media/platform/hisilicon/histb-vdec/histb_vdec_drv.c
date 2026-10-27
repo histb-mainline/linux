@@ -45,6 +45,8 @@ static const struct histb_vdec_fmt_desc *const histb_vdec_fmt_list[] = {
 	&histb_vdec_h264_fmt,
 	&histb_vdec_hevc_fmt,
 	&histb_vdec_mpeg2_fmt,
+	&histb_vdec_mpeg4_fmt,
+	&histb_vdec_h263_fmt,
 };
 
 /*
