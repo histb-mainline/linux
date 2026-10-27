@@ -505,6 +505,25 @@ static int histb_vdec_queue_setup(struct vb2_queue *vq,
 	else
 		f = &fh->cap_fmt;
 
+	/*
+	 * The picture message names references through a fixed table of APC
+	 * slots and a capture buffer index is that slot, so a capture queue
+	 * deeper than the table could never have all of its buffers addressable
+	 * as references. The ceiling counts the buffers the queue already holds:
+	 * VIDIOC_REQBUFS reaches this op with the queue empty, because the core
+	 * frees the old buffers first, and reports the depth it granted back in
+	 * count; VIDIOC_CREATE_BUFS reaches it with those buffers in place, and
+	 * there the core only caps the request at VB2_MAX_FRAME.
+	 */
+	if (!V4L2_TYPE_IS_OUTPUT(vq->type)) {
+		unsigned int have = vb2_get_num_buffers(vq);
+
+		if (have >= HISTB_VDEC_MAX_APC_SLOTS)
+			return -ENOBUFS;
+		if (*num_buffers > HISTB_VDEC_MAX_APC_SLOTS - have)
+			*num_buffers = HISTB_VDEC_MAX_APC_SLOTS - have;
+	}
+
 	if (*num_planes) {
 		if (*num_planes != 1)
 			return -EINVAL;
@@ -512,18 +531,6 @@ static int histb_vdec_queue_setup(struct vb2_queue *vq,
 			return -EINVAL;
 		return 0;
 	}
-
-	/*
-	 * The picture message names references through a fixed table of APC
-	 * slots, so a capture queue deeper than that table could never have all
-	 * of its buffers addressable as references. Clamping the count is
-	 * enough here: VIDIOC_REQBUFS documents that the driver stores the
-	 * number actually granted in count, which may be smaller than asked
-	 * for, so the client sees the depth it got.
-	 */
-	if (!V4L2_TYPE_IS_OUTPUT(vq->type) &&
-	    *num_buffers > HISTB_VDEC_MAX_APC_SLOTS)
-		*num_buffers = HISTB_VDEC_MAX_APC_SLOTS;
 
 	*num_planes = 1;
 	sizes[0] = f->fmt.pix_mp.plane_fmt[0].sizeimage;
@@ -685,10 +692,9 @@ static int histb_vdec_queue_init(void *priv, struct vb2_queue *src_vq,
 	 * The downstream message tables reference frames through the 16-slot
 	 * APC/POC arrays; buffer index is the APC slot, so more buffers would
 	 * be impossible to address. vb2 core rejects max_num_buffers <
-	 * VB2_MAX_FRAME, so the cap is enforced in ->queue_setup() instead;
-	 * that makes VIDIOC_CREATE_BUFS clamp to the queue's own buffer ceiling
-	 * rather than reaching 32, the same shape the in-tree st/delta driver
-	 * uses.
+	 * VB2_MAX_FRAME, so the cap is enforced in ->queue_setup() instead, and it
+	 * counts the buffers already queued there because the core caps a
+	 * VIDIOC_CREATE_BUFS request only at VB2_MAX_FRAME.
 	 */
 	dst_vq->min_queued_buffers = 4;
 
