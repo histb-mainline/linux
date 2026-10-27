@@ -578,7 +578,12 @@ static int hi3798mv100_hdmi_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	return component_add(dev, &hi3798mv100_hdmi_component_ops);
+	ret = component_add(dev, &hi3798mv100_hdmi_component_ops);
+	/* Only remove() unregisters the audio codec pdev. */
+	if (ret)
+		sii9134_remove(&priv->sii9134);
+
+	return ret;
 }
 
 static void hi3798mv100_hdmi_remove(struct platform_device *pdev)
