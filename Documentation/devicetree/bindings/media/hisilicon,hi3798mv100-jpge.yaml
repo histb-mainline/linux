@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/hisilicon,hi3798mv100-jpge.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon Hi3798MV100 JPEG encoder (JPGE)
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+description: |-
+  The JPEG encoder of the Hi3798MV100 family. Like its decoder it is a block of
+  its own, with its own register window, interrupt line and clock gate, and it
+  codes one raw picture per job rather than working as a stateless video
+  encoder. It has no frame-description or Huffman-table registers: its coder is
+  built around the ITU-T T.81 Annex K tables, so only the quantisation file is
+  programmed.
+
+  Hi3716CV200 has the same block: its S_JPGE_REGS_TYPE accumulates to the same
+  0x10c0 window with every name this driver touches at the same offset
+  (msp/drv/jpge/src/jpge_reg.h).
+
+properties:
+  compatible:
+    enum:
+      - hisilicon,hi3798mv100-jpge
+      - hisilicon,hi3716cv200-jpge
+
+  reg:
+    maxItems: 1
+    description: |-
+      Register window. The vendor driver maps 0x10c0 bytes, which reaches the
+      end of the quantisation file at 0x1000.
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: jpge
+
+  resets:
+    maxItems: 1
+    description: The block's own reset request in the clock and reset generator.
+
+  reset-names:
+    const: jpge
+
+  memory-region:
+    maxItems: 1
+    description: |-
+      Phandle to a reserved memory region to allocate buffers from. The block
+      is programmed with single physical addresses and has no MMU of its own
+      here, so buffers have to be physically contiguous. Without this property
+      they are taken from the default CMA area.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/hisilicon,hi3798mv100-crg.h>
+
+    jpeg-encoder@8c90000 {
+        compatible = "hisilicon,hi3798mv100-jpge";
+        reg = <0x8c90000 0x10c0>;
+        interrupts = <GIC_SPI 102 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&crg HI3798MV100_JPGE_CLK>;
+        clock-names = "jpge";
+        resets = <&crg 0x90 4>;
+        reset-names = "jpge";
+    };
