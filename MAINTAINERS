@@ -11945,6 +11945,14 @@ F:	Documentation/devicetree/bindings/clock/hisilicon,hisi-crg.yaml
 F:	drivers/clk/hisilicon/crg-hi3798mv100.c
 F:	include/dt-bindings/clock/hisilicon,hi3798mv100-*.h
 
+HISILICON STB VDH VIDEO DECODER DRIVER
+M:	David Yang <mmyangfl@gmail.com>
+L:	linux-media@vger.kernel.org
+L:	linux-arm-kernel@lists.infradead.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/media/hisilicon,hi3798mv100-vdec.yaml
+F:	drivers/media/platform/hisilicon/histb-vdec/
+
 HISILICON STB VOLTAGE REGULATOR DRIVER
 M:	David Yang <mmyangfl@gmail.com>
 L:	linux-kernel@vger.kernel.org
