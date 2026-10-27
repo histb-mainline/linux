@@ -176,6 +176,8 @@
 #define AUDP_TXCTRL_ADDR		0xbc	/* reg 0x2f */
 #define BIT_TXHDMI_MODE			0x01
 #define BIT_LAYOUT1			0x02	/* layout 1: >2 channels */
+#define AUDP_PACKET_MODE	GENMASK(5, 3)	/* si_txvidp.c: 100/101/110 */
+#define AUDP_PACKET_24BIT	FIELD_PREP(AUDP_PACKET_MODE, 4)
 #define TEST_TX_ADDR		0xf0	/* reg 0x3c */
 #define BIT_DVI_ENC_BYPASS		0x08
 #define INF_CTRL1		0xf8	/* reg 0x3e, 16-bit */
@@ -932,9 +934,31 @@ sii9134_bridge_atomic_enable(struct drm_bridge *bridge,
 		       BIT_TX_PD | BIT_BSEL24BITS,
 		       BIT_TX_PD | BIT_BSEL24BITS);
 
-	/* HDMI mode on the link; a DVI sink stays in the encoder's DVI mode */
-	sii9134_modify(sii, sii->map1, AUDP_TXCTRL_ADDR, BIT_TXHDMI_MODE,
-		       hdmi_sink ? BIT_TXHDMI_MODE : 0);
+	/*
+	 * Which clock edge carries the pixel bus. The bit resets to 1, and
+	 * Hi3716CV200's own transmitter runs with it clear: measured there while
+	 * it was displaying, TX_SYS_CTRL1 = 0x35 against this driver's 0x37. A
+	 * mismatched sample edge is invisible to every other status bit -- the
+	 * TMDS PLL locks, the channel counts frames, video is unblanked -- and
+	 * still leaves the sink with blank data, so the edge belongs to the PHY
+	 * contract the glue supplies rather than something this core can infer.
+	 */
+	if (sii->phy->edge_falling)
+		sii9134_modify(sii, sii->map, TX_SYS_CTRL1_ADDR,
+			       BIT_TX_CLOCK_RISING_EDGE, 0);
+
+	/*
+	 * HDMI mode on the link; a DVI sink stays in the encoder's DVI mode.
+	 * The same register's [5:3] is the packet mode: the SDK's table
+	 * (si_txvidp.c:195-199) says 0b100 = 24 bits, which is what
+	 * SI_SetDeepColor() writes for the non-deep-colour case, and a
+	 * displaying Hi3716CV200 carries it (0x21). The reset value 0 is not
+	 * one of the encodings, so it is programmed here rather than left to
+	 * whatever the boot set.
+	 */
+	sii9134_modify(sii, sii->map1, AUDP_TXCTRL_ADDR,
+		       BIT_TXHDMI_MODE | AUDP_PACKET_MODE,
+		       (hdmi_sink ? BIT_TXHDMI_MODE : 0) | AUDP_PACKET_24BIT);
 
 	/*
 	 * Video input: the VDP puts RGB on the HDMI pins (the VDP driver sets
@@ -967,6 +991,10 @@ sii9134_bridge_atomic_enable(struct drm_bridge *bridge,
 	 * leave the block and its enable alone are the analog SD pixel-repeat
 	 * ones, which need a 27MHz row clock this link does not generate, so
 	 * every mode accepted here is in the 0x0e class.
+	 *
+	 * The address used to be 0x158 ("reg 0x56"), which is not the dither
+	 * block: si_defstx.h says TX_VID_DITHER is reg 0x4f, and a displaying
+	 * Hi3716CV200 carries 0x0e at 0x4f and 0 at 0x56.
 	 */
 	regmap_write(sii->map, TX_VID_MODE_ADDR, TX_VID_MODE_DITHER);
 	regmap_write(sii->map, TX_VID_DITHER_ADDR, TX_VID_DITHER_24BIT);
