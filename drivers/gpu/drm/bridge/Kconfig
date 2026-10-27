@@ -330,6 +330,21 @@ config DRM_SII902X
 	help
 	  Silicon Image sii902x bridge chip driver.
 
+config DRM_SII9134
+	tristate "Silicon Image SiI9134 HDMI 1.4 transmitter"
+	depends on OF
+	select DRM_KMS_HELPER
+	select REGMAP
+	select SND_SOC_HDMI_CODEC if SND_SOC
+	help
+	  Say Y or M here if you want to use the HDMI 1.4 transmitter built
+	  around a Silicon Image SiI9134 core, as integrated on the HiSilicon
+	  Hi3798MV100 (the same core also serves the Hi3716CV200, Hi3716DV100,
+	  Hi3716MV410, Hi3716MV420 and Hi3796MV100). It covers the controller
+	  registers plus,
+	  on the parts that have one, the on-chip TMDS PHY and its HDMI audio
+	  codec DAI.
+
 config DRM_SII9234
 	tristate "Silicon Image SII9234 HDMI/MHL bridge"
 	depends on OF
