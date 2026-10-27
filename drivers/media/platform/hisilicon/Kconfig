@@ -23,3 +23,22 @@ config VIDEO_HISTB_JPGD
 	  To compile this driver as a module, choose M here: the module will be
 	  called histb-jpgd.
 
+config VIDEO_HISTB_JPGE
+	tristate "HiSilicon HiSTB JPEG encoder driver"
+	depends on ARCH_HISI || COMPILE_TEST
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	select V4L2_JPEG_HELPER
+	help
+	  Support for the JPGE hardware JPEG encoder on HiSilicon Hi3798MV100
+	  and Hi3716CV200 set-top-box SoCs. The driver scales the standard
+	  quantiser tables for
+	  the requested quality, writes the JFIF header the block does not
+	  produce itself, and encodes one 8-bit semi-planar picture per mem2mem
+	  job.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called histb-jpge.
+
