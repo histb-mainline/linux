@@ -243,6 +243,15 @@ static irqreturn_t hix5hd2_ir_rx_interrupt(int irq, void *data)
 static const struct of_device_id hix5hd2_ir_table[] = {
 	{ .compatible = "hisilicon,hix5hd2-ir", &hix5hd2_data, },
 	{ .compatible = "hisilicon,hi3796cv300-ir", &hi3796cv300_data, },
+	/*
+	 * Hi3716CV200 keeps the same register map -- the value its own boot left in
+	 * IR_CONFIG, 0x3e801f0b, has 0x3e80 in bits 16..31, which is the symbol-width
+	 * field this driver writes IR_CFG_SYMBOL_MAXWIDTH into -- and the gate sits at
+	 * the same place: SYS_CTRL (0xf8000000) + 0x48, bit 4 enable / bit 5 reset,
+	 * which is hix5hd2_data's clk_reg. It does not need the extra enable bit,
+	 * because the vendor's ir_enable() writes 0x1, not 0x101.
+	 */
+	{ .compatible = "hisilicon,hi3716cv200-ir", &hix5hd2_data, },
 	{},
 };
 MODULE_DEVICE_TABLE(of, hix5hd2_ir_table);
