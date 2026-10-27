@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/bridge/hisilicon,hi3798mv100-hdmi.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon Hi3798MV100 HDMI transmitter (SiI9134 core)
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+description: |
+  The HDMI 1.4 transmitter of the HiSilicon Hi3798MV100, a Silicon Image SiI9134
+  core plus an on-chip PHY. The two I2C banks of the standalone part are
+  flattened into one register window, bank 0 at the base, bank 1 at offset 0x400
+  and the 32-bit PHY registers at offset 0x1800, so a single 64 KiB reg entry
+  covers all three.
+
+  The clock gates of the block are two groups in the CRG, one for the controller
+  (PERI_CRG67 bits 5:0) and one for the PHY (PERI_CRG68 bit 0), and both are
+  exposed as clocks. A reset request only reaches the block while it is clocked,
+  so the driver enables them before it pulses the reset lines below.
+
+  The transmitter's own reduced DDC master is registered as an I2C bus carrying
+  this node's of_node, so the EDID is read over that bus and a connector node
+  can point its ddc-i2c-bus at this device.
+
+properties:
+  compatible:
+    const: hisilicon,hi3798mv100-hdmi
+
+  '#sound-dai-cells':
+    const: 0
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: Gates of the transmitter controller, PERI_CRG67 bits 5:0.
+      - description: Gate of the transmitter PHY, PERI_CRG68 bit 0.
+
+  clock-names:
+    items:
+      - const: ctrl
+      - const: phy
+
+  resets:
+    maxItems: 3
+
+  reset-names:
+    items:
+      - const: base
+      - const: bus
+      - const: phy
+
+  ports:
+    $ref: /schemas/graph.yaml#/properties/ports
+
+    properties:
+      port@0:
+        $ref: /schemas/graph.yaml#/properties/port
+        description:
+          Pixel input from the VDP channel.
+
+    required:
+      - port@0
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - clock-names
+  - resets
+  - reset-names
+  - ports
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/hisilicon,hi3798mv100-crg.h>
+
+    hdmi@8ce0000 {
+        compatible = "hisilicon,hi3798mv100-hdmi";
+        reg = <0x8ce0000 0x10000>;
+        interrupts = <88 4>;
+        clocks = <&crg HI3798MV100_HDMI_CTRL_CLK>,
+                 <&crg HI3798MV100_HDMI_PHY_CLK>;
+        clock-names = "ctrl", "phy";
+        resets = <&crg 0x10c 9>, <&crg 0x10c 8>, <&crg 0x110 4>;
+        reset-names = "base", "bus", "phy";
+        #sound-dai-cells = <0>;
+
+        ports {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port@0 {
+                reg = <0>;
+
+                hdmi_in_vdp: endpoint {
+                    remote-endpoint = <&vdp_out_hdmi>;
+                };
+            };
+        };
+    };
