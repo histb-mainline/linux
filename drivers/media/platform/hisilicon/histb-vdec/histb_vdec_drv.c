@@ -61,6 +61,36 @@ static const struct histb_vdec_fmt_desc *const histb_vdec_fmt_list[] = {
 };
 
 /*
+ * Hi3716CV200 runs an older VDH generation (the vendor build selects
+ * VDH_DIR := HiVDHV200R004 for it, against HiVDHV300R001 for Hi3798MV100;
+ * scripts/census-vdh-per-chip.py reproduces both readings from the shipped
+ * vfmw_make.cfg). Its register offsets and every message block this driver
+ * programs are the same, but HEVC is missing outright: that generation has no
+ * HEVC header at all, its report word keeps the two CTB-size bits reserved, and
+ * the chip's own capability list (product/Hi3716CV200/vfmw.c, the SupportedStd
+ * block) is the Hi3798MV100 list without VFMW_HEVC. So this list is the one
+ * above minus HEVC, and the first entry stays the default fourcc for both.
+ */
+static const struct histb_vdec_fmt_desc *const histb_vdec_fmt_list_cv200[] = {
+	&histb_vdec_h264_fmt,
+	&histb_vdec_mpeg2_fmt,
+	&histb_vdec_mpeg4_fmt,
+	&histb_vdec_h263_fmt,
+};
+
+static const struct histb_vdec_chip histb_vdec_chip_mv100 = {
+	.model = "HI3798MV100 VDH",
+	.fmts = histb_vdec_fmt_list,
+	.num_fmts = ARRAY_SIZE(histb_vdec_fmt_list),
+};
+
+static const struct histb_vdec_chip histb_vdec_chip_cv200 = {
+	.model = "HI3716CV200 VDH",
+	.fmts = histb_vdec_fmt_list_cv200,
+	.num_fmts = ARRAY_SIZE(histb_vdec_fmt_list_cv200),
+};
+
+/*
  * struct histb_vdec_dev and struct histb_vdec_ctx are fixed by the shared
  * driver contract; the record of the frame in flight, the locks they do not
  * carry and the per-open format state live in these wrappers, which own the
@@ -138,17 +168,25 @@ static void histb_vdec_set_frame_size(struct histb_vdec_ctx *ctx,
 	pix->plane_fmt[0].sizeimage = histb_vdec_frame_size(ctx, width, height);
 }
 
-static void histb_vdec_reset_fmts(struct histb_vdec_ctx *ctx)
+/*
+ * dev is a parameter, not looked up through ctx: ->open() calls this before
+ * v4l2_fh_init(), so ctx->fh.vdev is still NULL there and histb_vdec_dev_of()
+ * would dereference it (observed on Hi3798MV100 as an oops in v4l2_open at the
+ * first VIDIOC_OPEN of the decoder node).
+ */
+static void histb_vdec_reset_fmts(struct histb_vdec_ctx *ctx,
+				  const struct histb_vdec_dev *dev)
 {
 	struct histb_vdec_fh *fh = histb_vdec_fh_of(ctx);
+	const struct histb_vdec_fmt_desc *def = dev->chip->fmts[0];
 	struct v4l2_format *out = &fh->out_fmt;
 	struct v4l2_format *cap = &fh->cap_fmt;
 
-	ctx->desc = histb_vdec_fmt_list[0];
+	ctx->desc = def;
 
 	memset(out, 0, sizeof(*out));
 	out->type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-	out->fmt.pix_mp.pixelformat = histb_vdec_fmt_list[0]->fourcc;
+	out->fmt.pix_mp.pixelformat = def->fourcc;
 	out->fmt.pix_mp.field = V4L2_FIELD_NONE;
 	out->fmt.pix_mp.num_planes = 1;
 	out->fmt.pix_mp.colorspace = V4L2_COLORSPACE_REC709;
@@ -187,13 +225,13 @@ static void histb_vdec_reset_capture_fmt(struct histb_vdec_ctx *ctx)
 }
 
 static const struct histb_vdec_fmt_desc *
-histb_vdec_find_fmt(u32 fourcc)
+histb_vdec_find_fmt(const struct histb_vdec_dev *dev, u32 fourcc)
 {
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(histb_vdec_fmt_list); i++) {
-		if (histb_vdec_fmt_list[i]->fourcc == fourcc)
-			return histb_vdec_fmt_list[i];
+	for (i = 0; i < dev->chip->num_fmts; i++) {
+		if (dev->chip->fmts[i]->fourcc == fourcc)
+			return dev->chip->fmts[i];
 	}
 
 	return NULL;
@@ -225,10 +263,12 @@ static int histb_vdec_enum_fmt_cap(struct file *file, void *priv,
 static int histb_vdec_enum_fmt_out(struct file *file, void *priv,
 				   struct v4l2_fmtdesc *f)
 {
-	if (f->index >= ARRAY_SIZE(histb_vdec_fmt_list))
+	struct histb_vdec_dev *dev = video_get_drvdata(video_devdata(file));
+
+	if (f->index >= dev->chip->num_fmts)
 		return -EINVAL;
 
-	f->pixelformat = histb_vdec_fmt_list[f->index]->fourcc;
+	f->pixelformat = dev->chip->fmts[f->index]->fourcc;
 	return 0;
 }
 
@@ -262,10 +302,11 @@ static int histb_vdec_try_fmt_cap(struct file *file, void *priv,
 static int histb_vdec_try_fmt_out(struct file *file, void *priv,
 				  struct v4l2_format *f)
 {
+	struct histb_vdec_dev *dev = video_get_drvdata(video_devdata(file));
 	struct v4l2_pix_format_mplane *pix = &f->fmt.pix_mp;
 
-	if (!histb_vdec_find_fmt(pix->pixelformat))
-		pix->pixelformat = histb_vdec_fmt_list[0]->fourcc;
+	if (!histb_vdec_find_fmt(dev, pix->pixelformat))
+		pix->pixelformat = dev->chip->fmts[0]->fourcc;
 
 	pix->field = V4L2_FIELD_NONE;
 	pix->num_planes = 1;
@@ -357,11 +398,12 @@ static int histb_vdec_s_fmt_out(struct file *file, void *priv,
 	if (ret)
 		return ret;
 
-	desc = histb_vdec_find_fmt(f->fmt.pix_mp.pixelformat);
+	desc = histb_vdec_find_fmt(histb_vdec_dev_of(ctx),
+				   f->fmt.pix_mp.pixelformat);
 	/*
 	 * Defensive: histb_vdec_try_fmt_out() above snapped the client's fourcc
 	 * onto a registered descriptor, so this lookup only returns NULL if a
-	 * negotiable format were ever missing from histb_vdec_fmt_list[];
+	 * negotiable format were ever missing from the chip's format list;
 	 * refuse rather than store a NULL desc whose codec ops every later job
 	 * would dereference.
 	 */
@@ -383,11 +425,13 @@ static int histb_vdec_s_fmt_out(struct file *file, void *priv,
 static int histb_vdec_enum_framesizes(struct file *file, void *priv,
 				      struct v4l2_frmsizeenum *fsize)
 {
+	struct histb_vdec_dev *dev = video_get_drvdata(video_devdata(file));
+
 	if (fsize->index)
 		return -EINVAL;
 
 	if (fsize->pixel_format != V4L2_PIX_FMT_NV21_16L16 &&
-	    !histb_vdec_find_fmt(fsize->pixel_format))
+	    !histb_vdec_find_fmt(dev, fsize->pixel_format))
 		return -EINVAL;
 
 	fsize->type = V4L2_FRMSIZE_TYPE_STEPWISE;
@@ -988,18 +1032,19 @@ static const struct v4l2_ctrl_ops histb_vdec_ctrl_ops = {
  */
 static int histb_vdec_init_ctrls(struct histb_vdec_ctx *ctx)
 {
+	const struct histb_vdec_chip *chip = histb_vdec_dev_of(ctx)->chip;
 	unsigned int i, j, nctrls = 0;
 	int ret;
 
-	for (i = 0; i < ARRAY_SIZE(histb_vdec_fmt_list); i++)
-		nctrls += histb_vdec_fmt_list[i]->num_ctrls;
+	for (i = 0; i < chip->num_fmts; i++)
+		nctrls += chip->fmts[i]->num_ctrls;
 
 	v4l2_ctrl_handler_init(&ctx->ctrl_hdl, nctrls);
 
-	for (i = 0; i < ARRAY_SIZE(histb_vdec_fmt_list); i++) {
-		for (j = 0; j < histb_vdec_fmt_list[i]->num_ctrls; j++) {
+	for (i = 0; i < chip->num_fmts; i++) {
+		for (j = 0; j < chip->fmts[i]->num_ctrls; j++) {
 			struct v4l2_ctrl_config cfg =
-				histb_vdec_fmt_list[i]->ctrls[j];
+				chip->fmts[i]->ctrls[j];
 
 			cfg.ops = &histb_vdec_ctrl_ops;
 			v4l2_ctrl_new_custom(&ctx->ctrl_hdl, &cfg, ctx);
@@ -1068,7 +1113,7 @@ static int histb_vdec_open(struct file *filp)
 		return -ENOMEM;
 
 	ctx = &fh->ctx;
-	histb_vdec_reset_fmts(ctx);
+	histb_vdec_reset_fmts(ctx, dev);
 	v4l2_fh_init(&ctx->fh, video_devdata(filp));
 
 	ctx->fh.m2m_ctx = v4l2_m2m_ctx_init(dev->m2m_dev, ctx,
@@ -1175,7 +1220,7 @@ static int histb_vdec_v4l2_init(struct histb_vdec_dev *dev)
 	dev->v4l2_dev.mdev = &dev->mdev;
 	strscpy(dev->mdev.driver_name, HISTB_VDEC_NAME,
 		sizeof(dev->mdev.driver_name));
-	strscpy(dev->mdev.model, "HI3798MV100 VDH", sizeof(dev->mdev.model));
+	strscpy(dev->mdev.model, dev->chip->model, sizeof(dev->mdev.model));
 	snprintf(dev->mdev.bus_info, sizeof(dev->mdev.bus_info),
 		 "platform:%s", dev_name(dev->dev));
 	media_device_init(&dev->mdev);
@@ -1317,7 +1362,13 @@ static void histb_vdec_pool_free(struct histb_vdec_dev *dev)
 }
 
 static const struct of_device_id histb_vdec_of_match[] = {
-	{ .compatible = "hisilicon,hi3798mv100-vdec" },
+	{
+		.compatible = "hisilicon,hi3798mv100-vdec",
+		.data = &histb_vdec_chip_mv100,
+	}, {
+		.compatible = "hisilicon,hi3716cv200-vdec",
+		.data = &histb_vdec_chip_cv200,
+	},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, histb_vdec_of_match);
@@ -1334,6 +1385,9 @@ static int histb_vdec_probe(struct platform_device *pdev)
 
 	dev = &core->vdec;
 	dev->dev = &pdev->dev;
+	dev->chip = of_device_get_match_data(&pdev->dev);
+	if (!dev->chip)
+		return dev_err_probe(&pdev->dev, -ENODEV, "unknown device\n");
 	platform_set_drvdata(pdev, core);
 	mutex_init(&dev->hw_lock);
 	mutex_init(&core->vdev_lock);
@@ -1423,6 +1477,13 @@ static int histb_vdec_probe(struct platform_device *pdev)
 	ret = histb_vdec_v4l2_init(dev);
 	if (ret)
 		goto err_assert_reset;
+
+	/*
+	 * Which chip this is reaches userspace as the media device's model string,
+	 * which no listing tool here prints; say it at probe too, the way the
+	 * encoder reports its hardware revision.
+	 */
+	dev_info(&pdev->dev, "video decoder, %s\n", dev->chip->model);
 
 	return 0;
 
