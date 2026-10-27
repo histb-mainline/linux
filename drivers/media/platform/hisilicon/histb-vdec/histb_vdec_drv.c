@@ -1484,6 +1484,8 @@ static int histb_vdec_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_assert_reset;
 
+	histb_vdec_debugfs_init(dev);
+
 	/*
 	 * Which chip this is reaches userspace as the media device's model string,
 	 * which no listing tool here prints; say it at probe too, the way the

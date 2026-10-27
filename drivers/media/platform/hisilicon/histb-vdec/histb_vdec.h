@@ -232,6 +232,10 @@ struct histb_vdec_dev {
 	struct mutex		hw_lock;
 	struct histb_vdec_msgpool pool;
 	bool			job_running;
+
+	/* debugfs bring-up window, see histb_vdec_debug.c */
+	struct dentry		*dbgfs;
+	struct regmap		*crg;
 };
 
 struct histb_vdec_fmt_desc;
@@ -321,6 +325,14 @@ void histb_vdec_hw_kick(struct histb_vdec_dev *dev,
 			enum histb_vdec_vidstd std);
 /* Program the constant tables once at probe. */
 void histb_vdec_hw_init_tables(struct histb_vdec_dev *dev);
+/* debugfs bring-up counters over the table area, see histb_vdec_debug.c. */
+unsigned int histb_vdec_hw_check_tables(const struct histb_vdec_dev *dev,
+					unsigned int *first_bad);
+unsigned int histb_vdec_hw_scratch_usage(const struct histb_vdec_dev *dev,
+					 unsigned int idx, unsigned int *first);
+
+/* debug.c: register and message-pool dump window for bring-up measurements. */
+void histb_vdec_debugfs_init(struct histb_vdec_dev *dev);
 
 static inline void vdm_write(struct histb_vdec_dev *dev, unsigned int reg,
 			     u32 val)
@@ -406,5 +418,8 @@ static inline u32 histb_vdec_trail_zero_bits(const u8 *va, u32 end_bit)
 #define HISTB_TABLE_OFF_SCRATCH_BASE	286720
 #define HISTB_TABLE_OFF_SCRATCH(i)	(HISTB_TABLE_OFF_SCRATCH_BASE + \
 					 (i) * HISTB_VDEC_SCRATCH_SIZE)
+
+/* Bytes of each scratch block the debugfs usage probe inspects. */
+#define HISTB_VDEC_SCRATCH_PROBE	(16 * 1024)
 
 #endif /* HISTB_VDEC_H */

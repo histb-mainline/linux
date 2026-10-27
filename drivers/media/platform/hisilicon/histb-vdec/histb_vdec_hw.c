@@ -1,14 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * VDM hardware sequencing for the HiSilicon Hi3798MV100 video decoder.
  *
  * The VDM is started by a doorbell register and reports completion through a
- * single level-triggered interrupt; the message pool it reads and writes is
- * a plain DMA region prepared by the codec layers.
+ * single level-triggered interrupt; the message pool it reads and writes is a
+ * plain DMA region prepared by the codec layers.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/regmap.h>
 #include <linux/bitfield.h>
 #include <linux/build_bug.h>
 #include <linux/delay.h>
@@ -27,8 +28,8 @@
  *
  * Masks every interrupt source and drops anything latched across the reset.
  * Runs once at probe, after the reset is released and before the interrupt
- * handler is registered; the per-frame start path unmasks the frame-done
- * source again.
+ * handler is registered; the per-frame start path unmasks the frame-done source
+ * again.
  *
  * Return: 0 on success, a negative error code otherwise.
  */
@@ -45,8 +46,8 @@ int histb_vdec_hw_init(struct histb_vdec_dev *dev)
  * @dev: decoder device
  *
  * Asserts the decoder reset line for a short pulse and re-applies the
- * all-masked interrupt state, which the reset clears. Used to recover from
- * a wedged frame.
+ * all-masked interrupt state, which the reset clears. Used to recover from a
+ * wedged frame.
  */
 void histb_vdec_hw_reset(struct histb_vdec_dev *dev)
 {
@@ -63,9 +64,9 @@ void histb_vdec_hw_reset(struct histb_vdec_dev *dev)
  * @dev: decoder device
  * @std: protocol of the frame about to be decoded
  *
- * Selects the protocol's clock gating mode in the SCD block's global
- * register window (0 for HEVC, 3 for every other protocol) and rings the
- * VDM doorbell with the 0-1-0 write sequence the start logic expects.
+ * Selects the protocol's clock gating mode in the SCD block's global register
+ * window (0 for HEVC, 3 for every other protocol) and rings the VDM doorbell
+ * with the 0-1-0 write sequence the start logic expects.
  */
 void histb_vdec_hw_kick(struct histb_vdec_dev *dev, enum histb_vdec_vidstd std)
 {
@@ -85,8 +86,8 @@ void histb_vdec_hw_kick(struct histb_vdec_dev *dev, enum histb_vdec_vidstd std)
  * @dev: decoder device
  *
  * Copies the CABAC M/N tables of H.264 and HEVC into the table area of the
- * message pool, from where the VDM fetches them by DMA. The VDM expects
- * them at fixed offsets once per probe; they are read-only afterwards.
+ * message pool, from where the VDM fetches them by DMA. The VDM expects them at
+ * fixed offsets once per probe; they are read-only afterwards.
  */
 void histb_vdec_hw_init_tables(struct histb_vdec_dev *dev)
 {
@@ -108,10 +109,10 @@ void histb_vdec_hw_init_tables(struct histb_vdec_dev *dev)
 	       histb_vdec_cabac_mn_h264, HISTB_VDEC_CABAC_MN_H264_SIZE);
 
 	/*
-	 * The HEVC table is stored as readable (m, n) pairs; the vendor
-	 * loader finishes with a byte-swap pass that interleaves every pair
-	 * as (n, m) in memory, which is what the hardware fetcher expects.
-	 * The H.264 loader does not swap.
+	 * The HEVC table is stored as readable (m, n) pairs; the vendor loader
+	 * finishes with a byte-swap pass that interleaves every pair as (n, m)
+	 * in memory, which is what the hardware fetcher expects. The H.264
+	 * loader does not swap.
 	 */
 	for (i = 0; i < HISTB_VDEC_CABAC_MN_HEVC_SIZE / 4; i++) {
 		u32 v = histb_vdec_cabac_mn_hevc[i];
@@ -127,5 +128,67 @@ void histb_vdec_hw_init_tables(struct histb_vdec_dev *dev)
 	 */
 	memset(tables + HISTB_TABLE_OFF_TILE_INFO, 0,
 	       HISTB_VDEC_TILE_INFO_SIZE);
+}
+
+/**
+ * histb_vdec_hw_check_tables() - verify the read-only protocol tables survived
+ * @dev: decoder device
+ * @first_bad: output, pool-relative offset of the first differing word
+ *
+ * The H.264 CABAC M/N table is written once at probe and the VDM only reads it,
+ * so a difference means some address handed to the VDM points back into the
+ * table area. Returns the number of differing words.
+ */
+unsigned int histb_vdec_hw_check_tables(const struct histb_vdec_dev *dev,
+					unsigned int *first_bad)
+{
+	const u32 *tables = histb_vdec_tables_base(&dev->pool);
+	unsigned int bad = 0;
+	unsigned int i;
+
+	for (i = 0; i < HISTB_VDEC_CABAC_MN_H264_WORDS; i++) {
+		if (tables[HISTB_TABLE_OFF_CABAC_MN_H264 / 4 + i] ==
+		    histb_vdec_cabac_mn_h264[i])
+			continue;
+		if (!bad)
+			*first_bad = HISTB_TABLE_OFF_CABAC_MN_H264 + i * 4;
+		bad++;
+	}
+
+	return bad;
+}
+
+/**
+ * histb_vdec_hw_scratch_usage() - report writes into the head of a scratch block
+ * @dev: decoder device
+ * @idx: enum histb_vdec_scratch index
+ * @first: output, offset of the first non-zero byte
+ *
+ * Only the VDM writes these blocks, from the addresses carried by the picture
+ * and slice descriptors, so an untouched head means the descriptor address is
+ * not the one the VDM used. The table area is write-combined and reads are
+ * slow, so the scan stops after HISTB_VDEC_SCRATCH_PROBE bytes; a block that
+ * was used further into its window can still read zero here. Returns the number
+ * of non-zero bytes inside that window.
+ */
+unsigned int histb_vdec_hw_scratch_usage(const struct histb_vdec_dev *dev,
+					 unsigned int idx, unsigned int *first)
+{
+	static const unsigned int probe = HISTB_VDEC_SCRATCH_PROBE;
+	const u8 *base = histb_vdec_tables_base(&dev->pool) +
+			 HISTB_TABLE_OFF_SCRATCH(idx);
+	unsigned int nz = 0;
+	unsigned int i;
+
+	*first = UINT_MAX;
+	for (i = 0; i < probe; i++) {
+		if (!base[i])
+			continue;
+		if (nz == 0)
+			*first = i;
+		nz++;
+	}
+
+	return nz;
 }
 
