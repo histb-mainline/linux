@@ -283,6 +283,7 @@ static inline void hix5hd2_mac_interface_reset(struct hix5hd2_priv *priv)
 	reset_control_deassert(priv->mac_ifc_rst);
 }
 
+
 static void hix5hd2_config_port(struct net_device *dev, u32 speed, u32 duplex)
 {
 	struct hix5hd2_priv *priv = netdev_priv(dev);
@@ -820,25 +821,22 @@ static netdev_tx_t hix5hd2_net_xmit(struct sk_buff *skb, struct net_device *dev)
 }
 
 /*
- * Release the receive buffers when the device goes away, not when
- * the interface is closed.
+ * Release the receive buffers when the device goes away, not when the interface
+ * is closed.
  *
- * The block fetches sixteen free-queue descriptors ahead of the
- * producer and keeps them: measured on the AR513W, a freshly opened
- * eth0 that has received nothing yet already has RX_FQ_RD at 0x200
- * (sixteen descriptors in), and a reopen inherits the position
- * (RX_FQ_WR=0x120 against RX_FQ_RD=0x320 after one down/up cycle).
- * Releasing every rx_skb[] entry at close therefore hands the block
- * destinations it still owns, and the stack receives the buffers
- * this driver posted instead -- empty ones. That is what the
- * kfree_skb tracepoint showed after such a reopen: frames coming up
- * with protocol=12562 (UNHANDLED_PROTO) and six of them parsed as
- * LLC, i.e. whatever the slab had left in the memory rather than the
- * packet on the wire.
+ * The block fetches sixteen free-queue descriptors ahead of the producer and keeps
+ * them: measured on the AR513W, a freshly opened eth0 that has received nothing yet
+ * already has RX_FQ_RD at 0x200 (sixteen descriptors in), and a reopen inherits the
+ * position (RX_FQ_WR=0x120 against RX_FQ_RD=0x320 after one bounce). Releasing every
+ * rx_skb[] entry at close therefore hands the block destinations it still owns, and
+ * the stack receives the buffers this driver posted instead -- empty ones. That is
+ * what the kfree_skb tracepoint showed after a rebind: frames coming up with
+ * protocol=12562 (UNHANDLED_PROTO) and six of them parsed as LLC, i.e. whatever the
+ * slab had left in the memory rather than the packet on the wire.
  *
- * Keeping them mapped and owned costs at most RX_DESC_NUM skbs
- * between close and reopen, which is what the vendor's own restart
- * path does with its placeholder buffers.
+ * Keeping them mapped and owned costs at most RX_DESC_NUM skbs between close and
+ * reopen, which is what the vendor's own restart path does with its placeholder
+ * buffers.
  */
 static void hix5hd2_release_rx_buffers(struct hix5hd2_priv *priv)
 {
@@ -881,24 +879,20 @@ static void hix5hd2_free_dma_desc_rings(struct hix5hd2_priv *priv)
 }
 
 /*
- * Make the transmit half of a reopened interface look like a
- * first-opened one.
+ * Make the transmit half of a reopened interface look like a first-opened one.
  *
- * hix5hd2_net_close() frees every tx_skb[] entry but leaves the four
- * transmit shadow pointers where the previous session ended, so the
- * next hix5hd2_xmit_reclaim() would chase completions whose buffers
- * are gone. Zeroing the transmit pair reproduces the state this
- * board is known to carry traffic in: the first open works because
- * reset leaves all eight pointers at zero, and measured on the
- * AR513W an interface pinged after two down/up cycles puts its
- * eight echo requests on the wire with the pointers parked here.
+ * hix5hd2_net_close() frees every tx_skb[] entry but leaves the four transmit
+ * shadow pointers where the previous session ended, so the next hix5hd2_xmit_reclaim()
+ * would chase completions whose buffers are gone. Zeroing the transmit pair reproduces
+ * the state this board is known to carry traffic in: the first open works because reset
+ * leaves all eight pointers at zero, and measured on the AR513W an arm that pings after
+ * two bounces puts eight echo requests on the router leg with the pointers parked here.
  *
- * The receive half deliberately is NOT touched. The block holds
- * sixteen descriptors it already fetched, and the buffers they name
- * are kept alive by hix5hd2_release_rx_buffers(); zeroing the
- * receive pointers or clearing the receive rings would split that
- * pair apart, which is what delivered un-written buffers to the
- * stack (protocol=12562, LLC) after a down/up cycle.
+ * The receive half deliberately is NOT touched. The block holds sixteen descriptors it
+ * already fetched, and the buffers they name are kept alive by
+ * hix5hd2_release_rx_buffers(); zeroing the receive pointers or clearing the receive
+ * rings would split that pair apart, which is what delivered un-written buffers to the
+ * stack (protocol=12562, LLC) after a bounce.
  */
 static void hix5hd2_reset_tx_pointers(struct hix5hd2_priv *priv)
 {
@@ -907,6 +901,13 @@ static void hix5hd2_reset_tx_pointers(struct hix5hd2_priv *priv)
 
 	/* the queues have to be parked while their pointers move */
 	writel_relaxed(BITS_RX_STOP | BITS_TX_STOP, base + STOP_CMD);
+
+	netdev_dbg(priv->netdev,
+		   "reopen: RX_FQ_WR=0x%08x RX_FQ_RD=0x%08x RX_BQ_WR=0x%08x RX_BQ_RD=0x%08x\n",
+		   readl_relaxed(base + RX_FQ_WR_ADDR),
+		   readl_relaxed(base + RX_FQ_RD_ADDR),
+		   readl_relaxed(base + RX_BQ_WR_ADDR),
+		   readl_relaxed(base + RX_BQ_RD_ADDR));
 
 	writel_relaxed(BITS_TX_BQ_RD_ADDR_EN, base + TX_BQ_REG_EN);
 	writel_relaxed(0, base + TX_BQ_WR_ADDR);
@@ -920,10 +921,7 @@ static void hix5hd2_reset_tx_pointers(struct hix5hd2_priv *priv)
 
 	writel_relaxed(0, base + STOP_CMD);
 
-	/*
-	 * the two receive rings keep their descriptors: the block is
-	 * mid-queue in them
-	 */
+	/* the two receive rings keep their descriptors: the block is mid-queue in them */
 	for (i = 2; i < QUEUE_NUMS; i++) {
 		struct hix5hd2_desc_sw *q = &priv->pool[i];
 
