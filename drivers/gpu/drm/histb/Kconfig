@@ -32,3 +32,16 @@ config DRM_HISTB_VDP4
 	  through the device tree of_graph port@0 endpoint.
 
 	  If in doubt, say N.
+
+config DRM_HISTB_HDMI
+	tristate "DRM support for the HiSTB on-chip HDMI transmitter"
+	depends on DRM && I2C && OF && ARM64
+	select MFD_SYSCON
+	select SND_SOC_HDMI_CODEC if SND_SOC
+	help
+	  Choose this option for the on-chip HDMI 2.0 transmitter of HiSilicon
+	  HiSTB SoCs such as the hi3798mv200. It is the bridge downstream of a
+	  VDP display channel and turns that channel's pixel stream into a TMDS
+	  link.
+
+	  If in doubt, say N.
