@@ -305,7 +305,7 @@ static const struct sii9134_phy_ops hi3798mv100_hdmi_phy_ops = {
 #define CV200_PHY_TERM_EN	(0x0e * 4)
 
 #define CV200_RG_OE		BIT(5)
-#define CV200_RG_PWR_DOWN	BIT(4)
+#define CV200_RG_PWR_UP	BIT(4)
 
 static void hi3716cv200_hdmi_phy_init(struct sii9134 *sii)
 {
@@ -334,26 +334,26 @@ static void hi3716cv200_hdmi_phy_init(struct sii9134 *sii)
 	hi3798mv100_hdmi_phy_write(sii, CV200_PHY_ENC_BYPASS, 0x00);
 
 	/* "after cfg phy ok, we need reset phy pll" (si_phy.c:231-233) */
-	hi3798mv100_hdmi_phy_update(sii, CV200_PHY_OE, CV200_RG_PWR_DOWN, 0);
+	hi3798mv100_hdmi_phy_update(sii, CV200_PHY_OE, CV200_RG_PWR_UP, 0);
 	mdelay(1);
 }
 
 static void hi3716cv200_hdmi_phy_power(struct sii9134 *sii, bool on)
 {
 	/*
-	 * Power-down is bit 4 and output enable bit 5 of the same word
+	 * The PHY's power-up is bit 4 and its output enable bit 5 of one word
 	 * (si_phy.c:262-308 and :146-179), so releasing the reset has to come
 	 * first: enabling the output while the PLL is still powered down is the
 	 * one order this part does not accept.
 	 */
 	if (on) {
-		hi3798mv100_hdmi_phy_update(sii, CV200_PHY_OE, CV200_RG_PWR_DOWN,
-					    CV200_RG_PWR_DOWN);
+		hi3798mv100_hdmi_phy_update(sii, CV200_PHY_OE, CV200_RG_PWR_UP,
+					    CV200_RG_PWR_UP);
 		hi3798mv100_hdmi_phy_update(sii, CV200_PHY_OE, CV200_RG_OE,
 					    CV200_RG_OE);
 	} else {
 		hi3798mv100_hdmi_phy_update(sii, CV200_PHY_OE, CV200_RG_OE, 0);
-		hi3798mv100_hdmi_phy_update(sii, CV200_PHY_OE, CV200_RG_PWR_DOWN, 0);
+		hi3798mv100_hdmi_phy_update(sii, CV200_PHY_OE, CV200_RG_PWR_UP, 0);
 	}
 }
 
@@ -372,8 +372,19 @@ static const struct sii9134_phy_ops hi3716cv200_hdmi_phy_ops = {
 	.init = hi3716cv200_hdmi_phy_init,
 	.power = hi3716cv200_hdmi_phy_power,
 	.swing = hi3716cv200_hdmi_phy_swing,
-	.dvi_enc_in_ctrl = true,
 	.edge_falling = true,
+	/*
+	 * No .dvi_enc_in_ctrl here: this part owns the encoder on the PHY side, so
+	 * TEST_TX.DVI_ENC_BYPASS has to stay as reset left it. The vendor SDK never
+	 * writes TEST_TX on cv200 -- SI_TX_CTRL_DVIEncoder(), the only writer of that
+	 * bit, compiles its body for the mv100 family only (si_hdmitx.c:767-793), and
+	 * InitTestCtrlReg() returns before its #if 0 block (si_hdmitx.c:510-525) --
+	 * and its live page-1 TEST_TX reads 0x08 (BIT_DVI_ENC_BYPASS,
+	 * si_defstx.h:268) while it displays. Measured on the board: with the bit
+	 * cleared, as copying the mv100 flag did, the sink saw nothing but the
+	 * transmitter's own timing; setting it back by hand changed every frame the
+	 * capture card produced in that window.
+	 */
 };
 
 static int hi3798mv100_hdmi_runtime_suspend(struct device *dev)

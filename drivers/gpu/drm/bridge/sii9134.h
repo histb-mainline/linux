@@ -38,8 +38,10 @@ struct regmap;
  * @dvi_enc_in_ctrl:	the DVI/TMDS encoder lives in the SiI controller rather
  *			than in the PHY, so the core has to clear
  *			TEST_TX.DVI_ENC_BYPASS. Measured on hi3798mv100, where the
- *			link only comes up with it cleared. For another part: check
- *			its HDMI Tx chapter for which side owns TEST_TX.
+ *			link only comes up with it cleared; hi3716cv200 needs the
+ *			opposite, its SDK has no writer of TEST_TX at all and the
+ *			part runs with the bit set. For another part: check its HDMI
+ *			Tx chapter for which side owns TEST_TX.
  * @edge_falling:	sample the incoming pixel bus on the falling clock edge,
  *			i.e. leave TX_SYS_CTRL1.clock_rising_edge clear. The bit
  *			resets to 1, so a bring-up that never touches it samples on
