@@ -42,6 +42,9 @@
 #define VO_INT_DHD0_VTTHD1	BIT(0)	/* DHD0 vblank-ish threshold int */
 #define VO_INT_DHD0_VTTHD2	BIT(1)
 #define VO_INT_DHD0_VTTHD3	BIT(2)
+#define VO_INT_GWBC0_VTTHD	BIT(8)	/* graphics write-back frame done */
+#define VO_INT_DWBC0_VTTHD	BIT(9)	/* HD channel write-back frame done */
+#define VO_INT_WBCDHD_PARTFNS	BIT(28)	/* low-delay partial line done */
 
 #define VOAXICTRL		0x0034
 #define   VO_AXI_M0_RD0_OSTD GENMASK(3, 0)	/* read outstanding, bus 0 */
@@ -275,6 +278,89 @@
  */
 #define MIXG0_LAYER_G0		1
 #define MIXG0_LAYER_G1		2
+
+/* ------------------------------------------------------------------ */
+/* WBC_HD0: write-back of the composited HD channel                    */
+/* ------------------------------------------------------------------ */
+/*
+ * Taps DHD0 after the mixer, so a capture only produces pixels while the
+ * channel is running, and one enable plus regup yields one frame. The
+ * address and stride fields are byte values; the size fields are the last
+ * pixel, minus one style, like the rest of the block.
+ */
+#define WBC_DHD0_CTRL		0xac00
+#define   WBC_CTRL_REQ_INTERVAL	GENMASK(9, 0)	/* lines between write requests */
+#define   WBC_CTRL_AUTO_STOP	BIT(10)	/* wired up for WBC_GP0 only */
+#define   WBC_CTRL_HISTOGRAM	BIT(11)	/* histogam_en in the SoC layout */
+#define   WBC_CTRL_3D_MODE		GENMASK(19, 18)	/* 0 = mono */
+#define   WBC_CTRL_FORMAT		GENMASK(27, 24)	/* see the WBC_FORMAT_* values */
+#define   WBC_FORMAT_PKG_UYVY	0
+#define   WBC_FORMAT_PKG_YUYV	1
+#define   WBC_FORMAT_PKG_YVYU	2
+#define   WBC_FORMAT_SP420		4
+#define   WBC_FORMAT_SP422		5
+#define   WBC_FORMAT_ARGB8888		3	/* only the graphics tap takes this */
+#define   WBC_CTRL_MODE		GENMASK(29, 28)	/* what the block reads from the channel */
+#define   WBC_MODE_PROGRESSIVE	1
+#define   WBC_CTRL_UV_ORDER		BIT(30)	/* 1 = U first; planar formats only */
+#define   WBC_CTRL_EN			BIT(31)
+#define WBC_DHD0_UPD		0xac04
+#define   WBC_UPD_REGUP			BIT(0)
+#define WBC_DHD0_YADDR		0xac10	/* luma plane, or the whole picture when packed */
+#define WBC_DHD0_CADDR		0xac14	/* chroma plane of the semi-planar formats */
+#define WBC_DHD0_STRIDE		0xac18	/* both halves are written as one word */
+#define   WBC_STRIDE_L			GENMASK(15, 0)
+#define   WBC_STRIDE_C			GENMASK(31, 16)
+#define WBC_DHD0_ORESO		0xac20	/* written picture size, minus one */
+#define WBC_DHD0_FCROP		0xac24	/* first pixel kept: h[23:12] w[11:0] */
+#define   WBC_FCROP_W			GENMASK(11, 0)
+#define   WBC_FCROP_H			GENMASK(23, 12)
+#define WBC_DHD0_LCROP		0xac28	/* last pixel kept, minus one style */
+#define   WBC_LCROP_W			GENMASK(11, 0)
+#define   WBC_LCROP_H			GENMASK(23, 12)
+#define   WBC_ORESO_W			GENMASK(11, 0)
+#define   WBC_ORESO_H			GENMASK(23, 12)
+/*
+ * Relative offsets inside a write-back block. WBC_DHD0_* and WBC_GP0_* below
+ * share this layout; only DHD0 goes on to have a ZME and a histogram, and only
+ * GP0 has a dither mode.
+ */
+#define WBC_OFS_CTRL			0x000
+#define WBC_OFS_UPD			0x004
+#define WBC_OFS_YADDR			0x010
+#define WBC_OFS_CADDR			0x014
+#define WBC_OFS_STRIDE			0x018
+#define WBC_OFS_ORESO			0x020
+#define WBC_OFS_FCROP			0x024
+#define WBC_OFS_LCROP			0x028
+#define WBC_BASE_DHD0			0xac00
+#define WBC_BASE_GP0			0xa800
+
+/*
+ * The graphics tap: the vendor's own framebuffer code writes ARGB8888 out of
+ * this block to copy the on-screen layer (drv_hifb_wbc.c:175-195), with the
+ * 8-bit SPA dither mode in dither_md[31:29].
+ */
+#define WBC_GP0_DITHER_CTRL		0xa900
+#define   WBC_GP0_DITHER_MD		GENMASK(31, 29)
+#define   WBC_GP0_DITHER_SPA_8		3
+
+/*
+ * The write-back scales through a ZME of its own, laid out like the graphics
+ * layer's: same ratio fields, same offset registers.
+ */
+#define WBC_DHD0_ZME_HSP		0xaec0
+#define   WBC_ZME_HSP_RATIO		GENMASK(23, 0)
+#define   WBC_ZME_HPREC			BIT(20)	/* 1:1 horizontal ratio */
+#define WBC_DHD0_ZME_HLOFFSET	0xaec4
+#define WBC_DHD0_ZME_HCOFFSET	0xaec8
+#define WBC_DHD0_ZME_VSP		0xaed8	/* format of what the block fetches, plus taps */
+#define   WBC_ZME_IN_FMT		GENMASK(20, 19)	/* VDP_PROC_FMT_*: 0 SP422, 1 SP420 */
+#define   WBC_ZME_OUT_FMT		GENMASK(22, 21)
+#define WBC_DHD0_ZME_VSR		0xaedc
+#define   WBC_ZME_VSR_RATIO		GENMASK(15, 0)
+#define   WBC_ZME_VPREC			BIT(12)	/* 1:1 vertical ratio */
+#define WBC_DHD0_ZME_VOFFSET	0xaee0
 
 /* ------------------------------------------------------------------ */
 /* DHD0 display channel (DHD1 = base + 0x400)                          */
