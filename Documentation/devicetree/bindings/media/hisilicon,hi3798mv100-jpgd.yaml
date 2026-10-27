@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/hisilicon,hi3798mv100-jpgd.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HiSilicon Hi3798MV100 JPEG decoder (JPGD)
+
+maintainers:
+  - David Yang <mmyangfl@gmail.com>
+
+description: |-
+  The JPEG decoder of the Hi3798MV100 family. It is a block of its own next to
+  the VDH video decoder, with its own register window, interrupt line and clock
+  gate, and it is programmed with one picture at a time rather than as a
+  stateless video decoder.
+
+  Hi3716CV200 has the same block with the same register names at the same
+  offsets, except that its register file has no entry at 0x134, where the
+  Hi3798MV100 map places the MMU bypass word, so that one write is not made on
+  that part.
+
+properties:
+  compatible:
+    enum:
+      - hisilicon,hi3798mv100-jpgd
+      - hisilicon,hi3716cv200-jpgd
+
+  reg:
+    maxItems: 1
+    description: |-
+      Register window. The vendor driver maps 0x6f0 bytes, which covers the
+      quantization and Huffman table files at 0x200 and above; Hi3716CV200's own
+      header gives its length as 0x6bf (msp/drv/jpeg/include/hi_jpeg_reg.h).
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: jpgd
+
+  resets:
+    maxItems: 1
+    description: The block's own reset request in the clock and reset generator.
+
+  reset-names:
+    const: jpgd
+
+  memory-region:
+    maxItems: 1
+    description: |-
+      Phandle to a reserved memory region to allocate buffers from. The block
+      is programmed with single physical addresses and has no MMU of its own
+      here, so buffers have to be physically contiguous. Without this property
+      they are taken from the default CMA area.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/hisilicon,hi3798mv100-crg.h>
+
+    jpeg-decoder@8c40000 {
+        compatible = "hisilicon,hi3798mv100-jpgd";
+        reg = <0x8c40000 0x6f0>;
+        interrupts = <GIC_SPI 97 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&crg HI3798MV100_JPGD_CLK>;
+        clock-names = "jpgd";
+        resets = <&crg 0x7c 4>;
+        reset-names = "jpgd";
+    };
