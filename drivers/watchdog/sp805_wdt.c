@@ -114,10 +114,11 @@ static int wdt_setload(struct watchdog_device *wdd, unsigned int timeout)
 	wdd->timeout = div_u64((load + 1) * 2 + (rate / 2), rate);
 	/*
 	 * WDTLOAD counts down twice: the first underflow raises the interrupt,
-	 * the second one is what resets.  This driver never requests the
-	 * interrupt line, so nothing claims the first underflow -- the
-	 * framework has to service the counter strictly inside the first
-	 * window, not at its edge: its keepalive is max_hw_heartbeat_ms / 2.
+	 * the second one is what resets. Nothing in the kernel claims that
+	 * interrupt -- the production system requests no watchdog IRQ either
+	 * (/proc/interrupts has no wdt row) -- so the framework has to service
+	 * the counter strictly inside the first window, not at its edge: its
+	 * keepalive is max_hw_heartbeat_ms / 2.
 	 */
 	wdd->max_hw_heartbeat_ms = wdd->timeout * 500;
 	spin_unlock(&wdt->lock);
@@ -197,16 +198,25 @@ static int wdt_config(struct watchdog_device *wdd, bool ping)
 	spin_lock(&wdt->lock);
 
 	/*
-	 * The counter only reloads, and only advances, while the block is
-	 * unlocked, and it only advances with INT_ENABLE set: writing WDTLOCK
-	 * right after WDTLOAD freezes WDTVALUE where it stands, which is what
-	 * the previous order did on every framework keepalive.  A locked dog
-	 * cannot count, so a locked arm is not a safety net at all.
+	 * [LOCAL cv200] Write order and the missing LOCK word are both measured,
+	 * not stylistic. The counter only reloads from an unlocked block: with the
+	 * s1/s2/s3 steps of the wdtkick bench (UNLOCK, then LOAD, or INTCLR, or
+	 * INTCLR-then-LOAD) WDTVALUE reloaded to ~WDTLOAD and then stepped down at
+	 * about 25.4 MHz (0x2AE1B707 -> 0x295CCCBC -> ... twelve samples ~1 s
+	 * apart), which is the feed the driver is supposed to be doing.
 	 *
-	 * So: clear the interrupt first, enable, then load the counter, and
-	 * leave the block unlocked.  The UNLOCK write stays -- without it no
-	 * write lands at all.  wdt_disable still locks, because a stopped dog
-	 * should not be reprogrammable.
+	 * And WDTLOCK stops it: writing the lock word immediately after a LOAD
+	 * froze WDTVALUE at 0x1A370B7C for 14 samples spanning 14 s, and the same
+	 * freeze landed exactly on each watchdog-framework keepalive tick (uptime
+	 * 30 s and 45 s -- the cadence max_hw_heartbeat_ms sets) because that path
+	 * ends with this very LOCK write. A locked dog cannot count, so a locked
+	 * arm is not a safety net at all: the boot that ended at uptime 237 s was
+	 * the companion MPU, not this block.
+	 *
+	 * So: clear the interrupt first, enable, then load the counter, and leave
+	 * the block unlocked. The UNLOCK write stays -- without it no write lands
+	 * at all (a raw poke with any other key is silently dropped). wdt_disable
+	 * still locks, because a stopped dog should not be reprogrammable.
 	 */
 	writel_relaxed(UNLOCK, wdt->base + WDTLOCK);
 	writel_relaxed(INT_MASK, wdt->base + WDTINTCLR);
@@ -296,8 +306,18 @@ sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 	device_property_read_u64(&adev->dev, "clock-frequency", &rate);
 
 	wdt->clk = devm_clk_get_optional(&adev->dev, NULL);
-	if (IS_ERR(wdt->clk))
+	/*
+	 * A deferred clock provider must not delay the arming: this driver
+	 * pre-arms the watchdog at probe so the board survives the early panics
+	 * of the corruption family, and femac probes right after us. With a DT
+	 * clock-frequency we can arm without the provider.
+	 */
+	if (IS_ERR(wdt->clk) && PTR_ERR(wdt->clk) == -EPROBE_DEFER && rate) {
+		dev_warn(&adev->dev, "clock provider deferred, using DT rate\n");
+		wdt->clk = NULL;
+	} else if (IS_ERR(wdt->clk)) {
 		return dev_err_probe(&adev->dev, PTR_ERR(wdt->clk), "Clock not found\n");
+	}
 
 	wdt->rate = clk_get_rate(wdt->clk);
 	if (!wdt->rate)
@@ -340,6 +360,42 @@ sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 		wdt_enable(&wdt->wdd);
 		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
 	}
+
+	/*
+	 * [LOCAL cv200] Arm at probe and keep it armed. Two properties of this
+	 * integration decide what that has to look like, both measured with the
+	 * wdtkick/wdttrace benches: the counter only advances while the block is
+	 * unlocked (writing WDTLOCK freezes WDTVALUE where it stands), and it only
+	 * advances with INT_ENABLE set. wdt_config() is ordered for that.
+	 *
+	 * What is already measured about the feed path: WDTINTCLR re-times a running
+	 * counter (WDTVALUE 0x1040 -> 0x211F right after the clear), and the counter
+	 * only advances with INT_ENABLE set (CONTROL 0x2 left WDTVALUE sitting on
+	 * WDTLOAD unchanged; 0x3 made it decrement within one read). With
+	 * CONFIG_WATCHDOG_OPEN_TIMEOUT=0 the framework never stops feeding it
+	 * (open_deadline is KTIME_MAX), so a probe-armed dog bites only when the
+	 * kernel itself can no longer run its keepalive work -- which is the
+	 * case the arming is for, because panic=10 plus .restart already
+	 * covers an honest panic.
+	 *
+	 * Two things a reader needs to repeat any of this from userspace: every
+	 * write must be preceded by WDTLOCK (0xc00) = 0x1ACCE551 -- the driver
+	 * does that, a raw devmem with any other key silently changes nothing
+	 * and reads back the old value -- and WDTLOCK reads 0 whether locked or
+	 * not, so latch-by-readback is the only writable test.
+	 *
+	 * The ~240 s death some earlier rounds saw is not this block's doing and
+	 * is not ours at all: it is the companion MPU driving GPIO110 through
+	 * /system/reset3716 (a boot parked at fastboot# with no kernel running
+	 * dies the same way), so it neither argues for nor against arming here.
+	 * The production system leaves WDTCONTROL 0; recovery here stays with
+	 * panic=10 in every round's bootargs plus the sysrq path.
+	 */
+	if (wdt_config(&wdt->wdd, false))
+		dev_warn(&adev->dev, "cannot pre-arm watchdog\n");
+	else
+		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
+	watchdog_set_nowayout(&wdt->wdd, true);
 
 	watchdog_stop_on_reboot(&wdt->wdd);
 	ret = watchdog_register_device(&wdt->wdd);
@@ -410,7 +466,17 @@ static struct amba_driver sp805_wdt_driver = {
 	.remove = sp805_wdt_remove,
 };
 
-module_amba_driver(sp805_wdt_driver);
+/*
+ * Register at subsys_initcall, not device_initcall: the corruption family
+ * panics in femac's probe at ~2.1s and this driver must have the watchdog armed
+ * before that. The amba devices are created by of_platform_populate at
+ * arch_initcall, so subsys is the earliest safe level.
+ */
+static int __init sp805_wdt_early_init(void)
+{
+	return amba_driver_register(&sp805_wdt_driver);
+}
+subsys_initcall(sp805_wdt_early_init);
 
 MODULE_AUTHOR("Viresh Kumar <vireshk@kernel.org>");
 MODULE_DESCRIPTION("ARM SP805 Watchdog Driver");
