@@ -11764,6 +11764,15 @@ F:	drivers/net/dsa/hirschmann/*
 F:	include/linux/platform_data/hirschmann-hellcreek.h
 F:	net/dsa/tag_hellcreek.c
 
+HISILICON AIAO AUDIO I2S PORTS
+M:	David Yang <mmyangfl@gmail.com>
+L:	linux-sound@vger.kernel.org
+S:	Supported
+F:	Documentation/devicetree/bindings/sound/hisilicon,hi3798mv100-aiao-card.yaml
+F:	Documentation/devicetree/bindings/sound/hisilicon,hi3798mv100-aiao-i2s.yaml
+F:	sound/soc/hisilicon/histb-aiao-card.c
+F:	sound/soc/hisilicon/histb-aiao-i2s.c
+
 HISILICON DMA DRIVER
 M:	Zhou Wang <wangzhou1@hisilicon.com>
 M:	Longfang Liu <liulongfang@huawei.com>
