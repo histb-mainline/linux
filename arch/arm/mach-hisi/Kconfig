@@ -65,6 +65,17 @@ config ARCH_HI3716CV200
 	  written and never counts, and the per-CPU clock events come from the
 	  SP804 channels instead.
 
+config HISTB_CV200_PMUDUMP
+	bool "Hi3716CV200 CPU PMU debugfs dump (bench only)"
+	depends on DEBUG_FS
+	help
+	  Dumps the ARMv7 PMU CP15 registers of every online CPU, plus a
+	  PMCCNTR delta measured over a short loop with interrupts off, and
+	  lets a mask be ORed into the Cortex-A9 auxiliary control register.
+
+	  Say N unless bring-up needs to see why the counters read zero; this
+	  is a test instrument and is not part of the port.
+
 config ARCH_SD5203
 	bool "Hisilicon SD5203 family"
 	depends on ARCH_MULTI_V5
