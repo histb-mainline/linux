@@ -11809,6 +11809,13 @@ S:	Supported
 F:	Documentation/admin-guide/perf/hns3-pmu.rst
 F:	drivers/perf/hisilicon/hns3_pmu.c
 
+HISILICON HIX5HD2 INFRARED RECEIVER DRIVER
+M:	David Yang <mmyangfl@gmail.com>
+L:	linux-media@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/media/hisilicon,hix5hd2-ir.yaml
+F:	drivers/media/rc/ir-hix5hd2.c
+
 HISILICON I2C CONTROLLER DRIVER
 M:	Devyn Liu <liudingyuan@h-partners.com>
 L:	linux-i2c@vger.kernel.org
