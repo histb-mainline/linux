@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_HISTB_VDEC
+	tristate "HiSilicon Hi3798MV100 video decoder driver"
+	depends on ARCH_HISI || COMPILE_TEST
+	depends on V4L_MEM2MEM_DRIVERS
+	depends on VIDEO_DEV
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	select V4L2_H264
+	help
+	  Support for the VDH hardware video decoder on HiSilicon
+	  Hi3798MV100 set-top-box SoCs. The driver implements the V4L2
+	  stateless decoder interface: the bitstream is parsed in
+	  userspace and submitted through request controls, and the
+	  hardware decodes H.264, HEVC, MPEG-2 and MPEG-4 Part 2 / H.263
+	  into 16x16-tiled NV21 frames.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called histb-vdec.
