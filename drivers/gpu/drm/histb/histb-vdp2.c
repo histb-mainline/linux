@@ -188,6 +188,8 @@ struct histb_vdp2 {
 	const struct histb_vdp2_chip	*chip;
 
 	int			irq;
+	unsigned int		vbcount;
+	unsigned long		irq_report;
 
 	struct histb_vdp2_display	*disp;	/* NULL unless the pipeline is bound */
 };
@@ -561,10 +563,21 @@ static const struct histb_wb_fmt *histb_wb_fmt_find(u32 format)
 	return NULL;
 }
 
-/* the capture is one frame of what the channel mixes, read
- * progressively as the vendor's snapshot path does
- * (drv_disp_hal.c:2583), at 1:1
+/*
+ * Bring-up arms for what the block reads. Defaults are the shape used until
+ * now: mode_out = PROGRESSIVE, which is also what the vendor's snapshot path
+ * programs (drv_disp_hal.c:2583), and the ZME input format left exactly as the
+ * reset leaves it.
  */
+static int wbc_mode_out = 1;
+module_param(wbc_mode_out, int, 0644);
+MODULE_PARM_DESC(wbc_mode_out, "WBC mode_out[29:28]: 0 interface, 1 progressive, 2 top field, 3 bottom field");
+
+static int wbc_zme_in_fmt = -1;
+module_param(wbc_zme_in_fmt, int, 0644);
+MODULE_PARM_DESC(wbc_zme_in_fmt, "WBC ZME input format[20:19]: -1 untouched, 0 SP422 (vendor), 1 SP420, 2 SP444");
+
+/* the capture is one frame of what the channel mixes, at 1:1 */
 static void histb_wb_setup(struct histb_vdp2 *vdp, const struct histb_wb_fmt *fmt,
 			   struct drm_framebuffer *fb)
 {
@@ -578,7 +591,7 @@ static void histb_wb_setup(struct histb_vdp2 *vdp, const struct histb_wb_fmt *fm
 	ctrl = vo_read(vdp, base + WBC_OFS_CTRL);
 	ctrl &= ~(WBC_CTRL_FORMAT | WBC_CTRL_MODE | WBC_CTRL_3D_MODE);
 	ctrl |= FIELD_PREP(WBC_CTRL_FORMAT, fmt->wbc_format) |
-		FIELD_PREP(WBC_CTRL_MODE, WBC_MODE_PROGRESSIVE);
+		FIELD_PREP(WBC_CTRL_MODE, wbc_mode_out);
 	if (fmt->planes == 2) {
 		ctrl &= ~WBC_CTRL_UV_ORDER;
 		if (fmt->uv_order)
@@ -586,6 +599,14 @@ static void histb_wb_setup(struct histb_vdp2 *vdp, const struct histb_wb_fmt *fm
 	}
 	/* the caller enables, once the target is fully described */
 	vo_write(vdp, base + WBC_OFS_CTRL, ctrl);
+
+	if (base == WBC_BASE_DHD0 && wbc_zme_in_fmt >= 0) {
+		u32 vsp = vo_read(vdp, WBC_DHD0_ZME_VSP);
+
+		vsp &= ~WBC_ZME_IN_FMT;
+		vsp |= FIELD_PREP(WBC_ZME_IN_FMT, wbc_zme_in_fmt);
+		vo_write(vdp, WBC_DHD0_ZME_VSP, vsp);
+	}
 
 	if (base == WBC_BASE_GP0) {
 		/* 10-bit surfaces dither down to the 8-bit target the block writes */
@@ -1020,7 +1041,8 @@ static void histb_vdp2_pipeline_init(struct histb_vdp2 *vdp)
 	 * rotated, and nothing upstream can be changed to fix it: every 32bpp ifmt
 	 * code this chip names only rotates the byte index of the pixel, and no
 	 * 32-bit DRM format composes with that map into the honest assignment (both
-	 * measured on the AR513W). This stage is the one place in the path that reorders the
+	 * measured on the AR513W; see the laneprobe and cscperm rounds in the
+	 * bring-up ledger). This stage is the one place in the path that reorders the
 	 * component lines, so it carries the inverse cycle, and it still performs no
 	 * colour-space conversion -- the interface carries RGB (see
 	 * histb_vdp2_crtc_setup_timing()) and the transmitter converts on its own.
@@ -1464,11 +1486,31 @@ static irqreturn_t histb_vdp2_irq_handler(int irq, void *data)
 
 	/* the line stays requested across an aggregate unbind, no CRTC then */
 	if (disp) {
-		if (sta & VO_INT_DHD0_VTTHD1)
+		if (sta & VO_INT_DHD0_VTTHD1) {
 			drm_crtc_handle_vblank(&disp->crtc);
+			vdp->vbcount++;
+		}
 		histb_wb_update(disp, all, sta);
 	}
 
+	/*
+	 * [LOCAL] bring-up instrument, remove before submission. The 07:30Z round
+	 * showed the interrupt row counting ~60/s even with VO_INTMSK bit 0 set, so
+	 * the mask gates what this handler acts on, not whether the line asserts --
+	 * which means "does the row move" cannot answer "does DRM get vblanks". This
+	 * prints the branch that actually answers it: the latched status word and how
+	 * many times handle_vblank was reached, so a round can tell a real vblank flow
+	 * from an unmasked-but-ignored source. Every interrupt would bury the console
+	 * of the other benches, so it reports on a fixed 5 s cadence instead.
+	 */
+	if (time_after_eq(jiffies, vdp->irq_report)) {
+		vdp->irq_report = jiffies + msecs_to_jiffies(5000);
+		dev_info(vdp->dev,
+			 "vbcount=%u all=0x%08x sta=0x%08x\n"
+			 "msk=0x%08x vblanks=%llu\n",
+			 vdp->vbcount, all, sta, vo_read(vdp, VO_INTMSK),
+			 disp ? (unsigned long long)drm_crtc_vblank_count(&disp->crtc) : 0);
+	}
 	return IRQ_HANDLED;
 }
 

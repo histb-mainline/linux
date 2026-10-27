@@ -316,7 +316,8 @@ static void hi3716cv200_hdmi_phy_init(struct sii9134 *sii)
 	 * 0x1a, and an unknown tag falls back to the original
 	 * (boot/product/driver/hdmi/hdmi_1_4/phy.c:9-32). This board's tag was
 	 * measured as 0x40 from its own boot system, so 0x1a is what the vendor
-	 * would write here.
+	 * would write here; the bench reads the register again so the choice is
+	 * checked against the part rather than against a note.
 	 */
 	hi3798mv100_hdmi_phy_write(sii, CV200_PHY_CTRL2, 0x89);
 	hi3798mv100_hdmi_phy_write(sii, CV200_PHY_TERM_EN, 0x00);

@@ -39,7 +39,7 @@
 
 /*
  * Digital window. Offsets and bit layouts are the ones in the SDK's register
- * file for this part;
+ * file for this part, transcribed into docs/mv200h-hdmitx-regmap-2026-10-22;
  * the reset value of TX_PWD_RST_CTRL, where only the HDCP 2.2 MCU request bit
  * is set, was read back from a board running the vendor's own system.
  */
@@ -59,6 +59,35 @@
 #define  TX_PWD_HELD		(TX_HDCP2X_SRST | TX_MCU_SRST)
 
 #define VIDEO_DMUX_CTRL		0x09a8
+/*
+ * Video path (TX + 0x800) -- hal/ctrl/hisiv100/regs/hdmi_reg_video_path.h.
+ * The two halves of this block decide the question the panel cannot answer for
+ * us on this board: VIDEO_PATH_CTRL bit 0 blanks the outgoing video (so a set
+ * bit means black even with a live source), and the FORMAT DETECTOR measures the
+ * timing that actually arrives from the VDP -- hsync_active_cnt [12:0] and
+ * hsync_total_cnt [25:13] at +0x8c0, the vertical pair at +0x8c4, flags
+ * interlaced[0]/hsync[1]/vsync[2] at +0x8bc.  FDET_STATUS is latched: the
+ * vendor re-arms it by clearing bit 3 of +0x8b8 and raising it again
+ * (hdmi_hal_ctrl.c:1563-1564), which is what histb_hdmi_fdet_dump() does.
+ */
+#define TIMING_GEN_CTRL		0x0800
+#define   TG_GEN_EN			BIT(0)
+#define   TG_EXTMODE			BIT(1)
+#define   TG_TIMING_SEL			GENMASK(7, 2)
+#define VIDEO_PATH_CTRL		0x0830
+#define   VIDEO_BLANK_EN		BIT(0)
+#define FORMAT_DET_CONFIG	0x08b8
+#define   FDET_SYNC_FORCE		BIT(0)
+#define   FDET_HSYNC_POL_VAL		BIT(1)
+#define   FDET_VSYNC_POL_VAL		BIT(2)
+#define   FDET_STATUS_CLEAR		BIT(3)
+#define   FDET_PIXEL_CNT_THREHOLD	GENMASK(7, 4)
+#define FDET_STATUS			0x08bc
+#define   FDET_INTERLACED		BIT(0)
+#define FDET_HORI_RES		0x08c0
+#define FDET_VERT_RES		0x08c4
+#define   FDET_ACTIVE			GENMASK(12, 0)
+#define   FDET_TOTAL			GENMASK(25, 13)
 
 #define  DMUX_SYNCMASK_EN	GENMASK(24, 21)
 #define  DMUX_INVER_SYNC	GENMASK(28, 25)
@@ -262,6 +291,7 @@ struct histb_hdmi_ddc {
 	struct mutex lock;
 };
 
+
 #define HISTB_HDMI_MAX_KHZ	600000
 
 struct histb_hdmi {
@@ -271,6 +301,8 @@ struct histb_hdmi {
 	struct regmap *crg;
 	struct clk *clk_pix;
 	struct clk *clk_tmds;
+	struct delayed_work fdet_work;
+	int fdet_left;
 	struct reset_control *resets;
 	struct histb_hdmi_ddc ddc;
 	unsigned int audio_tmds_khz;
@@ -425,6 +457,74 @@ static int histb_hdmi_atomic_check(struct drm_bridge *bridge,
 	return 0;
 }
 
+/*
+ * Board test instrument, not for submission: ask the transmitter what timing it
+ * actually sees.  Nothing here writes anything but the detector's own re-arm
+ * bit, so the reading is the device's measurement of the VDP's output rather
+ * than our opinion about it -- which is the only kind of verdict this board can
+ * give with no capture card attached.
+ */
+/*
+ * The detector latches, so the reading that matters is taken a few frames after
+ * the channel starts -- and never by sleeping in the enable path.  This runs
+ * from the bridge's atomic_enable, which must not schedule.  The first version
+ * did sleep there, and that boot was the first one where /sbin/init and /bin/sh
+ * both came back ETXTBSY ("No working init found"); the link is a hypothesis,
+ * not a proven cause, and the next round's whole point is to see whether the
+ * panic survives this version.  A delayed work is the legal way to wait either
+ * way, and its extra samples tell "measured zero once at start-up" apart from
+ * "no timing ever arrives at the transmitter".
+ */
+static void histb_hdmi_fdet_dump(struct histb_hdmi *hdmi);
+
+static void histb_hdmi_fdet_work(struct work_struct *work)
+{
+	struct histb_hdmi *hdmi = container_of(to_delayed_work(work),
+					       struct histb_hdmi, fdet_work);
+
+	histb_hdmi_fdet_dump(hdmi);
+	if (hdmi->fdet_left-- > 0)
+		schedule_delayed_work(&hdmi->fdet_work, msecs_to_jiffies(4000));
+}
+
+static void histb_hdmi_fdet_dump(struct histb_hdmi *hdmi)
+{
+	u32 cfg, h, v, status;
+
+	/*
+	 * The result words hold the last measured frame and the clear below
+	 * empties them, so read before clearing; clearing first made every dump
+	 * report 0 no matter what the channel was sending.
+	 */
+	status = histb_hdmi_read(hdmi, FDET_STATUS);
+	h = histb_hdmi_read(hdmi, FDET_HORI_RES);
+	v = histb_hdmi_read(hdmi, FDET_VERT_RES);
+
+	dev_info(hdmi->dev,
+		 "hdmi-fdet: hactive %u htotal %u vactive %u vtotal %u status %08x\n",
+		 (u32)FIELD_GET(FDET_ACTIVE, h), (u32)FIELD_GET(FDET_TOTAL, h),
+		 (u32)FIELD_GET(FDET_ACTIVE, v), (u32)FIELD_GET(FDET_TOTAL, v),
+		 status);
+
+	/*
+	 * Clear and re-measure, the vendor's own sequence
+	 * (hdmi_hal_ctrl.c:1563-1564): a detector that refills within a frame is
+	 * what says the numbers above were live rather than a stale latch.
+	 */
+	cfg = histb_hdmi_read(hdmi, FORMAT_DET_CONFIG);
+	histb_hdmi_write(hdmi, FORMAT_DET_CONFIG, cfg & ~FDET_STATUS_CLEAR);
+	histb_hdmi_write(hdmi, FORMAT_DET_CONFIG, cfg | FDET_STATUS_CLEAR);
+	msleep(30);
+	h = histb_hdmi_read(hdmi, FDET_HORI_RES);
+
+	dev_info(hdmi->dev, "hdmi-fdet: refilled hactive %u htotal %u\n",
+		 (u32)FIELD_GET(FDET_ACTIVE, h), (u32)FIELD_GET(FDET_TOTAL, h));
+	dev_info(hdmi->dev, "hdmi-fdet: vgapath %08x timing_gen %08x fdet_cfg %08x\n",
+		 histb_hdmi_read(hdmi, VIDEO_PATH_CTRL),
+		 histb_hdmi_read(hdmi, TIMING_GEN_CTRL),
+		 histb_hdmi_read(hdmi, FORMAT_DET_CONFIG));
+}
+
 static void histb_hdmi_atomic_enable(struct drm_bridge *bridge,
 				     struct drm_atomic_commit *commit)
 {
@@ -500,6 +600,9 @@ static void histb_hdmi_atomic_enable(struct drm_bridge *bridge,
 	histb_hdmi_phy_write(hdmi, PHY_TOP_PD,
 			     histb_hdmi_phy_read(hdmi, PHY_TOP_PD) & ~PHY_GC_PD);
 
+	hdmi->fdet_left = 2;
+	mod_delayed_work(system_wq, &hdmi->fdet_work, 0);
+
 	return;
 
 err_resets:
@@ -515,6 +618,8 @@ static void histb_hdmi_atomic_disable(struct drm_bridge *bridge,
 {
 	struct histb_hdmi *hdmi = bridge_to_histb_hdmi(bridge);
 	u32 val;
+
+	cancel_delayed_work_sync(&hdmi->fdet_work);
 
 	/* Stop driving before the PLL goes down, the vendor's order. */
 	val = histb_hdmi_phy_read(hdmi, PHY_TOP_PD);
@@ -835,7 +940,8 @@ static const struct component_ops histb_hdmi_component_ops = {
  * for this sample rate and TMDS clock -- CTS itself comes from the hardware
  * (acr_cts_hw_sw_sel stays clear).  The order below, including the pulse on the
  * afifo/acr/aud reset requests, is the one the vendor path uses, because those
- * fields are clocked by what that pulse restarts.
+ * fields are clocked by what that pulse restarts.  Tables and the extracted
+ * field encodings: docs/mv200h-hdmi-audio-2026-10-22.md.
  *
  * The four I2S input enables are all raised and the fifo map is left at its
  * reset value, because which AIAO transmit port reaches which input is not
@@ -1285,6 +1391,7 @@ static int histb_hdmi_probe(struct platform_device *pdev)
 		return PTR_ERR(hdmi);
 
 	hdmi->dev = &pdev->dev;
+	INIT_DELAYED_WORK(&hdmi->fdet_work, histb_hdmi_fdet_work);
 	platform_set_drvdata(pdev, hdmi);
 
 	ret = histb_hdmi_parse_dt(hdmi);

@@ -42,7 +42,7 @@
 #define VOAXICTRL		0x0030
 #define VOAXICTRL1		0x0034
 /*
- * Live reads off the system that displays: both AXI words hold
+ * Live reads off the system that displays (section 158b): both AXI words hold
  * 0x01110111 there, and the OEM kernel's own text contains no store to either
  * offset, so that is the reset state it runs with.  The earlier field decode
  * here (four-bit outstanding limits plus a multi-id bit) wrote 0x83ff instead,
@@ -58,12 +58,36 @@
  * post/scale stage and mixer slots, and those addresses -- not the header's --
  * are what the picture and the channel depend on.  Every word below is a store
  * found in that kernel's own text and matched to a name in this SDK's
- * vdp_hal_gfx.c / vdp_software_selfdefine.c by its field position.
+ * vdp_hal_gfx.c / vdp_software_selfdefine.c by its field position
+ * (docs/mv200h-femac-reboot-2026-10-21.md sections 151b and 152a).
  *
  * Words whose meaning is not established are left out on purpose: this part's
  * channel block showed what writing an unverified offset does (nothing, and no
  * way to tell).
  */
+/*
+ * Write-back capture and the cycle buffer: the two blocks in this VDP that can
+ * DMA *into* RAM.  Their place in this register file comes from the OEM
+ * kernel's own stores, not from the mv200 C header: VDP_WBC_SetEnable/
+ * SetAutoSt/SetOutIntf/SetUpdMode all store to base+0x6000 (wbc_en bit 31,
+ * upd_mode bit 29, mode_out bits 23:22, vp_connection bits 25:24) with the
+ * instance step at 0x400, VDP_WBC_SetRegUp stores to +0x6004, and the DMA side
+ * is a separate block at base+0x9200 -- YaddrH/L +0x50/+0x54, CaddrH/L
+ * +0x58/+0x5c, Ystride +0x60, Cstride +0x64, mmu bypass +0x14, low-delay lines
+ * +0x20, width/height +0xb8, ctrl +0x00 (ckgt 14, chksum 11, flip 9, uv 8,
+ * data_width 4), length/req_interval +0x04 (port ledger sections 164c and 165).
+ * The header's WBC_DHD0_* at 0x9000 does not decode on this board at all.
+ *
+ * Two board-measured constraints on writing this family: the address words are
+ * store-only (VDP_WBC_SetLayerAddr never reads them back), and a whole-word
+ * store of all-ones is dropped outright -- only field-wise values are taken.
+ * Both blocks are dumped rather than programmed here, so a boot can say what the
+ * loader left.
+ */
+#define WBC0_CTRL		0x6000
+#define WBC0_REGUP		0x6004
+#define CYCBUF_GFX_BIND		0x8600
+#define CYCBUF_MODE		0x8700
 
 #define GFX0_BASE			0x8a00
 #define   GFX0_STEP			0x200	/* per fetch unit (lsl #9) */
@@ -74,7 +98,7 @@
 #define   GFX0_REQ_EXT		(GFX0_BASE + 0x08)
 /*
  * Live value of the fetch unit's third word on the system that displays
-: this driver never wrote the offset and reads back 0.
+ * (section 158b): this driver never wrote the offset and reads back 0.
  * The fields are not decoded here, so the word is programmed verbatim.
  */
 #define     GFX0_REQ_EXT_LIVE		0x703
@@ -159,21 +183,21 @@
 					 FIELD_PREP(VP0_GALPHA, 0xff))
 /*
  * The commit word.  This block's configuration registers are shadowed: the
- * vendor's VDP_GFX_SetParaUpd(arg) reads base+0xf00 and ORs
+ * vendor's VDP_GFX_SetParaUpd(arg) (0xc06b5224) reads base+0xf00 and ORs
  * bit(17 + arg) back -- so the graphics surface's address/stride/format/geometry
  * only take effect after that pulse -- and VDP_GP_SetRegUp writes the same word,
  * which is why naming it after one block misleads.  VDP_DISP_SetParaUpd turned
  * out to be a trace stub in this build (it tail-calls a print helper), so only
- * the graphics bit matters for this driver.  No read-back here proves that
- * the latch self-clears.
+ * the graphics bit matters for this driver.  Nothing here claimed a read-back
+ * proves the latch: the word is dumped as `para` so a boot can say whether bit
+ * 17 self-clears.
  */
 #define PARA_UPD			0x0f00
 #define   PARA_UPD_GFX(n)		BIT(17 + (n))
 
 /*
  * Mixer slot words, read out of this part's own VDP_CBM_SetMixerPrio text
- * (read from the OEM image's own text, whose switch is on the header's
- * VDP_CBM_MIX_E
+ * (/tmp/oem-vmlinux 0xc06b4a48, whose switch is on the header's VDP_CBM_MIX_E
  * ids -- vdp_ip_define.h:947-958, where MIX0 is commented "MIX0-DHD0" and the
  * vendor's live XDP_DRV_SetVidCBM passes MIX0 = 4):
  *
@@ -189,7 +213,7 @@
  * for DHD0 without the VP/GP stages a graphics surface is 2, with them it is
  * GP0 = 2 and VP0 = 1; zero in a slot means no layer.
  *
- * The live words of a displaying OEM system, read on the board, are
+ * The live words of a displaying OEM system (read on the board, ledger §156) are
  * the values written below, and they show the VP/GP stages in use: the channel
  * mixer at 0x0208 and GP0's mixer at 0x6908 both hold 0x00000021 -- slot 0 = 1
  * (VP0), slot 1 = 2 (GFX0/GP0) -- while VP0's own mixer at 0x4108 holds
@@ -199,7 +223,7 @@
  * it.  Field meanings beyond the slot ids are still not established.
  *
  * The background word is the 10-bit triple Y[9:0] Cb[19:10] Cr[29:20], per the
- * bfi shifts in this part's VDP_CBM_SetMixerBkg.  Left at its reset
+ * bfi shifts in this part's VDP_CBM_SetMixerBkg (0xc06b48d8).  Left at its reset
  * 0 the uncovered area is YCbCr(0,0,0), which panels render as solid green, so a
  * green screen says no surface was admitted rather than that black was written.
  * A displaying OEM does not leave it at 0 and does not hold pure black either:
@@ -232,9 +256,9 @@
  * its own kernel text, VDP_DHD_DEFAULT stores its 0x8011 seed at base+0xc200,
  * VDP_DISP_SetIntfEnable and VDP_DISP_OpenIntf compute
  * base + 0xc200 + (chn << 9), and their stores use 16-bit halves where that
- * header declares 12/10/10 fields.  The words at 0xc200 also read back what
- * was written -- in the OEM while it displays and in our own kernel after a
- * write from this driver -- while
+ * header declares 12/10/10 fields (docs/mv200h-femac-reboot-2026-10-21.md
+ * section 148).  The words at 0xc200 also read back what was written -- in the
+ * OEM while it displays and in our own kernel after a bench write -- while
  * 0xc000 answers only four odd bit masks and holds 0 in a displaying system.
  *
  * Positions this part's channel block is documented to have but no store has
@@ -316,7 +340,8 @@
  * id straight into VO_MUX.hdmi_sel (hal/98mv200/vdp_hal_chn.c:1438).  The OEM
  * image actually running on this box disagrees: while it displays, VO_MUX is 0x1
  * -- hdmi_sel clear, so id 0 -- and the channel it programs is the one at
- * base+0xc200, i.e. id 0.  A board verdict that has not been retracted decides
+ * base+0xc200, i.e. id 0 (docs/mv200h-oem-oracle-2026-10-23.md and section 148
+ * of the board ledger).  A board verdict that has not been retracted decides
  * HD_CHN; nothing else may name a channel.
  *
  * Channels are HD_CHN_OFFSET apart -- 0x200, the shift the OEM's OpenIntf
@@ -337,6 +362,15 @@
 #define HD_PWR			(DHD0_PWR + HD_CHN * HD_CHN_OFFSET)
 #define HD_VTTHD3		(DHD0_VTTHD3 + HD_CHN * HD_CHN_OFFSET)
 #define HD_VTTHD		(DHD0_VTTHD + HD_CHN * HD_CHN_OFFSET)
+#define HD_VBLANK_STATE		(DHD0_VBLANK_STATE + HD_CHN * HD_CHN_OFFSET)
+/*
+ * Not a configuration word: VDP_DISP_GetDHD0VblankState reads exactly this word
+ * of the channel (base+0xc2a0), so it is the one place the channel says whether
+ * it is counting.  A displaying OEM system holds 0x00f404d8 there while our
+ * kernel holds 0x01000006 unchanged across seconds (docs/mv200h-femac-reboot-
+ * 2026-10-21.md section 150a).
+ */
+#define DHD0_VBLANK_STATE	0xc2a0
 
 /* hdmi_sel holds the id of the channel that reaches the interface, so both this
  * bit and the threshold source come out of HD_CHN and cannot disagree with it.
@@ -352,7 +386,7 @@
  * vtthd1 armed the channel asserted VOMSKINTSTA bit 1 -- dhd0vtthd2_int -- and
  * the driver logged it as "unexpected status 00000002" while
  * drm_crtc_handle_vblank() never ran and every commit ended in
- * "vblank wait timed out".
+ * "vblank wait timed out" (round of 2026-10-24, serial log).
  */
 #define HD_INT_VBLANK		(HD_CHN ? VO_INT_DHD1_VTTHD2 : VO_INT_DHD0_VTTHD2)
 #define HD_MUX_HDMI_SEL		(HD_CHN ? VO_MUX_HDMI_SEL : 0)
