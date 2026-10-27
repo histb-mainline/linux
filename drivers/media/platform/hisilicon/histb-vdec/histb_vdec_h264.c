@@ -1514,6 +1514,16 @@ static int histb_vdec_h264_run(struct histb_vdec_ctx *ctx,
 
 		if (nal_bit + run->slices[i].header_bit_size >= next_bit)
 			return -EINVAL;
+		/*
+		 * CABAC starts the segment at the next byte boundary (see
+		 * histb_h264_assemble_slice()), so a header ending inside the last
+		 * seven bits of the segment leaves nothing behind that rounding and
+		 * the u32 length wraps. Refuse it, as the HEVC path does for the
+		 * same shape.
+		 */
+		if (run->pps->flags & V4L2_H264_PPS_FLAG_ENTROPY_CODING_MODE &&
+		    ALIGN(nal_bit + run->slices[i].header_bit_size, 8) >= next_bit)
+			return -EINVAL;
 
 		histb_h264_assemble_slice(dev, ctx, run, h264, i, nal_bit,
 					  next_bit);
